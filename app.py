@@ -36,7 +36,7 @@ st.set_page_config(
 # --------------------------------------------------------------
 # HEADER
 # --------------------------------------------------------------
-st.title("🫁 Hypoxic Burden Calculator")
+st.title("🧠 Hypoxic Burden Calculator")
 st.markdown("""
 **Upload PSG EDF file** → get comprehensive sleep apnea metrics with **95% CI**.
 
