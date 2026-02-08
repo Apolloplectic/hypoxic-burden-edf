@@ -732,6 +732,129 @@ if edf_file is not None:
 # --------------------------------------------------------------
 # BATCH MODE
 # --------------------------------------------------------------
+st.markdown("---")
+st.markdown("### 📦 Batch Mode: Analyze Multiple Files")
+
+st.info("📝 **Note:** Batch mode uses the same analysis pipeline as single file mode. "
+        "For >5 files or >1 GB total, run locally for best performance.")
+
+batch_files = st.file_uploader(
+    "Upload multiple PSG EDF files",
+    type=["edf"],
+    accept_multiple_files=True,
+    key="batch_upload",
+    help="⚠️ Online: ≤5 files, ≤1 GB total. For larger batches, run locally."
+)
+
+if batch_files:
+    n_files = len(batch_files)
+    total_size_gb = sum(f.size for f in batch_files) / 1e9
+    
+    # Size check
+    if n_files > 5 or total_size_gb > 1.0:
+        st.error("**⚠️ BATCH TOO LARGE FOR ONLINE USE**")
+        st.markdown("""
+        **This batch requires local deployment:**
+        - **>5 files** or **>1 GB** → too slow for cloud
+        - **Solution**: Run locally (supports up to 50 files, 4 GB total)
+        
+        See "File too large?" section above for local setup instructions.
+        """)
+        st.stop()
+    
+    st.success(f"✅ {n_files} files uploaded ({total_size_gb:.2f} GB total)")
+    
+    # Batch settings
+    with st.expander("📋 Batch Report Options", expanded=True):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            batch_proof_mode = st.selectbox(
+                "Proof plots",
+                ["None", "Overlay (Azarbarzin-style)", "Full (all events)"],
+                index=1,
+                key="batch_proof"
+            )
+            batch_include_stages = st.checkbox(
+                "Include stage-specific results",
+                value=True,
+                key="batch_stages"
+            )
+        
+        with col2:
+            batch_desat_threshold = st.selectbox(
+                "Desaturation threshold",
+                ["3%", "4%"],
+                index=0,
+                key="batch_desat"
+            )
+            batch_use_global_hb = st.checkbox(
+                "Calculate Global HB",
+                value=True,
+                key="batch_global_hb"
+            )
+    
+    # Initialize batch session state
+    for key in ['batch_running', 'batch_paused', 'batch_progress', 'batch_results', 'batch_files_processed']:
+        if key not in st.session_state:
+            if 'progress' in key or 'processed' in key:
+                st.session_state[key] = 0
+            elif 'running' in key or 'paused' in key:
+                st.session_state[key] = False
+            else:
+                st.session_state[key] = []
+    
+    # Batch control buttons
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        start_btn = st.button(
+            "▶️ Run Batch",
+            type="primary",
+            disabled=st.session_state.batch_running,
+            use_container_width=True
+        )
+    
+    with col2:
+        pause_btn = st.button(
+            "⏸️ Pause",
+            disabled=not st.session_state.batch_running or st.session_state.batch_paused,
+            use_container_width=True
+        )
+    
+    with col3:
+        stop_btn = st.button(
+            "⏹️ Stop",
+            type="secondary",
+            disabled=not st.session_state.batch_running,
+            use_container_width=True
+        )
+    
+    # Handle stop/pause
+    if stop_btn:
+        for key in ['batch_running', 'batch_paused', 'batch_progress', 'batch_results', 'batch_files_processed']:
+            if 'progress' in key or 'processed' in key:
+                st.session_state[key] = 0
+            elif 'running' in key or 'paused' in key:
+                st.session_state[key] = False
+            else:
+                st.session_state[key] = []
+        st.rerun()
+    
+    if pause_btn:
+        st.session_state.batch_paused = True
+        st.session_state.batch_running = False
+        st.rerun()
+    
+    if st.session_state.batch_paused:
+        if st.button("▶️ Resume Batch", type="primary", use_container_width=True):
+            st.session_state.batch_running = True
+            st.session_state.batch_paused = False
+            st.rerun()
+    
+    # Progress indicators
+    progress_bar = st.progress(st.session_state.batch_progress / n_files if n_files > 0 else 0)
+    status_text = st.empty()
     
     # Run batch processing
     if start_btn or (st.session_state.batch_running and not st.session_state.batch_paused):
@@ -808,6 +931,7 @@ if edf_file is not None:
             
             # Update progress
             st.session_state.batch_files_processed = idx + 1
+            st.session_state.batch_progress = idx + 1
             progress_bar.progress((idx + 1) / n_files)
         
         # Generate master summary and ZIP
@@ -836,33 +960,25 @@ if edf_file is not None:
         status_text.text("✅ Batch processing complete!")
         st.success(f"**Batch Complete!** Generated {len(st.session_state.batch_results)} reports.")
         
-        # Generate PDF
-        pdf_generator = PDFReportGenerator()
-        pdf_buffer = pdf_generator.generate_report(
-            filename=edf_file.name,
-            results=results,
-            proof_mode=proof_mode,
-            include_stages=include_stages
-        )
-        
-        # download button
+        # Download ZIP
         st.download_button(
-            label="📥 Download PDF Report",
-            data=pdf_buffer.getvalue(),
-            file_name=f"HB_Report_{edf_file.name.replace('.edf', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-            mime="application/pdf",
+            label="📥 Download All Reports (ZIP)",
+            data=zip_buffer.getvalue(),
+            file_name=f"HB_Batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+            mime="application/zip",
             type="primary",
             use_container_width=True
         )
-                
-        # Reset batch state
-        for key in ['batch_running', 'batch_paused', 'batch_progress', 'batch_files_processed']:
-            if 'progress' in key or 'processed' in key:
-                st.session_state[key] = 0
-            else:
-                st.session_state[key] = False
         
-        st.session_state.batch_results = []
+        # Reset batch state
+        if st.button("🔄 Process Another Batch", use_container_width=True):
+            for key in ['batch_running', 'batch_paused', 'batch_progress', 'batch_files_processed']:
+                if 'progress' in key or 'processed' in key:
+                    st.session_state[key] = 0
+                else:
+                    st.session_state[key] = False
+            st.session_state.batch_results = []
+            st.rerun()
 
 # --------------------------------------------------------------
 # FOOTER
