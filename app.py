@@ -803,72 +803,33 @@ if batch_files:
                 st.session_state[key] = False
             else:
                 st.session_state[key] = []
-    
-    # Batch control buttons
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        start_btn = st.button(
-            "▶️ Run Batch",
-            type="primary",
-            disabled=st.session_state.batch_running,
-            use_container_width=True
-        )
-    
-    with col2:
-        pause_btn = st.button(
-            "⏸️ Pause",
-            disabled=not st.session_state.batch_running or st.session_state.batch_paused,
-            use_container_width=True
-        )
-    
-    with col3:
-        stop_btn = st.button(
-            "⏹️ Stop",
-            type="secondary",
-            disabled=not st.session_state.batch_running,
-            use_container_width=True
-        )
-    
-    # Handle stop/pause
-    if stop_btn:
-        for key in ['batch_running', 'batch_paused', 'batch_progress', 'batch_results', 'batch_files_processed']:
-            if 'progress' in key or 'processed' in key:
-                st.session_state[key] = 0
-            elif 'running' in key or 'paused' in key:
-                st.session_state[key] = False
-            else:
-                st.session_state[key] = []
-        st.rerun()
-    
-    if pause_btn:
-        st.session_state.batch_paused = True
-        st.session_state.batch_running = False
-        st.rerun()
-    
-    if st.session_state.batch_paused:
-        if st.button("▶️ Resume Batch", type="primary", use_container_width=True):
-            st.session_state.batch_running = True
-            st.session_state.batch_paused = False
-            st.rerun()
+
+    # Batch control - simple start button only
+    start_btn = st.button(
+        "▶️ Run Batch Analysis",
+        type="primary",
+        use_container_width=True,
+        disabled=st.session_state.get('batch_running', False)
+    )
     
     # Progress indicators
-    progress_bar = st.progress(st.session_state.batch_progress / n_files if n_files > 0 else 0)
+    if 'batch_progress' not in st.session_state:
+        st.session_state.batch_progress = 0
+    if 'batch_results' not in st.session_state:
+        st.session_state.batch_results = []
+    
+    progress_bar = st.progress(0)
     status_text = st.empty()
     
     # Run batch processing
-    if start_btn or (st.session_state.batch_running and not st.session_state.batch_paused):
+    if start_btn:
         st.session_state.batch_running = True
-        start_idx = st.session_state.batch_files_processed
+        st.session_state.batch_results = []
         batch_summary_data = []
         
         desat_thresh_val = 3 if "3%" in batch_desat_threshold else 4
         
-        for idx in range(start_idx, n_files):
-            if not st.session_state.batch_running:
-                break
-            
-            current_file = batch_files[idx]
+        for idx, current_file in enumerate(batch_files):
             status_text.text(f"📂 Processing {current_file.name} ({idx+1}/{n_files})...")
             progress_bar.progress((idx + 0.1) / n_files)
             
@@ -887,7 +848,7 @@ if batch_files:
                         os.remove(temp_path)
                     continue
                 
-                # Run analysis with additional error handling
+                # Run analysis
                 analyzer = PSGAnalyzer(raw, temp_path)
                 
                 # Check for SpO2 channel
@@ -947,46 +908,49 @@ if batch_files:
                 continue
             
             # Update progress
-            st.session_state.batch_files_processed = idx + 1
-            st.session_state.batch_progress = idx + 1
             progress_bar.progress((idx + 1) / n_files)
         
         # Generate master summary and ZIP
-        status_text.text("📊 Generating master summary...")
-        
-        pdf_generator = PDFReportGenerator()
-        master_buffer = pdf_generator.generate_batch_summary(batch_summary_data)
-        
-        # Create ZIP file
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-            # Add individual reports
-            for filename, pdf_buffer in st.session_state.batch_results:
-                zf.writestr(
-                    f"Reports/HB_Report_{filename.replace('.edf', '')}.pdf",
-                    pdf_buffer.getvalue()
-                )
+        if st.session_state.batch_results:
+            status_text.text("📊 Generating master summary and ZIP archive...")
             
-            # Add master summary
-            zf.writestr("Master_Summary.pdf", master_buffer.getvalue())
+            pdf_generator = PDFReportGenerator()
+            master_buffer = pdf_generator.generate_batch_summary(batch_summary_data)
+            
+            # Create ZIP file
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+                # Add individual reports
+                for filename, pdf_buffer in st.session_state.batch_results:
+                    zf.writestr(
+                        f"Reports/HB_Report_{filename.replace('.edf', '')}.pdf",
+                        pdf_buffer.getvalue()
+                    )
+                
+                # Add master summary
+                zf.writestr("Master_Summary.pdf", master_buffer.getvalue())
+            
+            zip_buffer.seek(0)
+            
+            # Success message
+            progress_bar.progress(1.0)
+            status_text.text("✅ Batch processing complete!")
+            st.success(f"🎉 **Batch Complete!** Successfully processed {len(st.session_state.batch_results)}/{n_files} files.")
+            
+            # Download ZIP
+            st.download_button(
+                label="📥 Download All Reports (ZIP)",
+                data=zip_buffer.getvalue(),
+                file_name=f"HB_Batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                mime="application/zip",
+                type="primary",
+                use_container_width=True
+            )
+        else:
+            st.error("❌ No files were successfully processed.")
         
-        zip_buffer.seek(0)
-        
-        # Success message
-        progress_bar.progress(1.0)
-        status_text.text("✅ Batch processing complete!")
-        st.success(f"**Batch Complete!** Generated {len(st.session_state.batch_results)} reports.")
-        
-        # Download ZIP
-        st.download_button(
-            label="📥 Download All Reports (ZIP)",
-            data=zip_buffer.getvalue(),
-            file_name=f"HB_Batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-            mime="application/zip",
-            type="primary",
-            use_container_width=True
-        )
-        
+        st.session_state.batch_running = False
+       
         # Reset batch state
         if st.button("🔄 Process Another Batch", use_container_width=True):
             for key in ['batch_running', 'batch_paused', 'batch_progress', 'batch_files_processed']:
