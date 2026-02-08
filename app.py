@@ -152,7 +152,7 @@ with st.expander("📦 File too large? Run locally (2 GB+ support) — no coding
 if edf_file is not None:
     # Load EDF file
     with st.spinner(f"Loading {edf_file.name}..."):
-        raw = load_edf_file(edf_file)
+        raw, temp_path = load_edf_file(edf_file)
     
     if raw is None:
         st.error("❌ Failed to load EDF file. Please check file format.")
