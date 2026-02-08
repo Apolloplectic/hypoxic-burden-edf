@@ -118,16 +118,29 @@ class PSGAnalyzer:
         """
         # Extract SpO₂ data
         spo2_sig, spo2_times = self.raw[self.spo2_ch]
+        
+        # Validate data
+        if len(spo2_sig.flatten()) != len(spo2_times.flatten()):
+            raise ValueError(f"SpO₂ data length mismatch: {len(spo2_sig.flatten())} samples vs {len(spo2_times.flatten())} timepoints")
+        
         df = pd.DataFrame({
             "time": spo2_times.flatten(),
             "spo2": spo2_sig.flatten()
         })
+        
+        # Validate DataFrame
+        if df.empty or len(df) == 0:
+            raise ValueError("SpO₂ data is empty after extraction")
         
         # Resample to 1 Hz if needed
         if self.raw.info['sfreq'] != 1:
             df['time'] = pd.to_datetime(df['time'], unit='s')
             df = df.set_index('time').resample('1s').mean().interpolate(method='linear').reset_index()
             df['time'] = (df['time'] - df['time'].iloc[0]).dt.total_seconds()
+        
+        # Validate after resampling
+        if df.empty or len(df) == 0:
+            raise ValueError("SpO₂ data is empty after resampling")
         
         # Apply artifact filter
         if artifact_filter != 'Off':
