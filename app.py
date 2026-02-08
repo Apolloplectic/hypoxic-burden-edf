@@ -161,7 +161,7 @@ if edf_file is not None:
     st.success(f"✅ EDF loaded successfully! Duration: {raw.times[-1]/3600:.1f} hours")
     
     # Create analyzer
-    analyzer = PSGAnalyzer(raw)
+    analyzer = PSGAnalyzer(raw, temp_path)
     
     # Display channel detection
     st.markdown("#### 🔍 Detected Channels")
