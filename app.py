@@ -967,10 +967,10 @@ except Exception as e:
         os.remove(temp_path)
     continue
             
-            # Update progress
-            st.session_state.batch_files_processed = idx + 1
-            st.session_state.batch_progress = idx + 1
-            progress_bar.progress((idx + 1) / n_files)
+        # Update progress
+        st.session_state.batch_files_processed = idx + 1
+        st.session_state.batch_progress = idx + 1
+        progress_bar.progress((idx + 1) / n_files)
         
         # Generate master summary and ZIP
         status_text.text("📊 Generating master summary...")
