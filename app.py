@@ -50,7 +50,7 @@ Based on:
 initialize_session_state()
 
 # --------------------------------------------------------------
-# SETTING PRESETS (Feature #11)
+# SETTING PRESETS
 # --------------------------------------------------------------
 PRESETS = {
     "Azarbarzin 2019 (Default)": {
@@ -185,7 +185,7 @@ if edf_file is not None:
         st.info("ℹ️ No MIT annotations found — using automated detection")
     
     # --------------------------------------------------------------
-    # ADVANCED SETTINGS WITH PRESETS (Feature #11)
+    # ADVANCED SETTINGS WITH PRESETS
     # --------------------------------------------------------------
     with st.expander("⚙️ Advanced Settings", expanded=False):
         # Preset selector
@@ -289,7 +289,7 @@ if edf_file is not None:
             st.rerun()
     else:
         # --------------------------------------------------------------
-        # ANALYSIS WITH PROGRESS INDICATOR (Feature #2)
+        # ANALYSIS WITH PROGRESS INDICATOR
         # --------------------------------------------------------------
         st.markdown("---")
         st.markdown("### 🔬 Analysis in Progress")
@@ -377,7 +377,7 @@ if edf_file is not None:
             severity = "Severe OSA"
         
         # --------------------------------------------------------------
-        # SUMMARY CARD AT TOP (Feature #7)
+        # SUMMARY CARD AT TOP
         # --------------------------------------------------------------
         st.markdown("## 📋 Executive Summary")
         
@@ -436,7 +436,7 @@ if edf_file is not None:
             )
         
         # --------------------------------------------------------------
-        # RISK VISUALIZATION (Feature #4)
+        # RISK VISUALIZATION
         # --------------------------------------------------------------
         st.markdown(f"### {risk_emoji} Risk Level: {risk}")
         
@@ -455,7 +455,7 @@ if edf_file is not None:
         st.caption("Risk thresholds: Low <20 | Moderate 20-53 | High 53-88 | Very High ≥88")
         
         # --------------------------------------------------------------
-        # COLLAPSIBLE SECTIONS (Feature #3)
+        # COLLAPSIBLE SECTIONS
         # --------------------------------------------------------------
         
         # Global Hypoxic Burden
@@ -480,10 +480,10 @@ if edf_file is not None:
                         "not just during apnea events. Calculated as the area between the SpO₂ curve "
                         "and the baseline, normalized per hour.")
         
-        # Sleep Architecture with Hypnogram (Features #3, #12)
+        # Sleep Architecture with Hypnogram
         with st.expander("😴 Sleep Architecture & Hypnogram", expanded=True):
             if analyzer.stages and len(analyzer.stages) > 0:
-                # Sleep Hypnogram (Feature #12)
+                # Sleep Hypnogram
                 st.markdown("#### Sleep Hypnogram")
                 
                 stage_map = {'W': 0, 'REM': 1, 'N1': 2, 'N2': 3, 'N3': 4, 'Unknown': 2}
@@ -526,7 +526,7 @@ if edf_file is not None:
                         df_stages = pd.DataFrame(stage_data)
                         st.dataframe(df_stages, use_container_width=True, hide_index=True)
                         
-                        # Stage Comparison Charts (Feature #6)
+                        # Stage Comparison Charts
                         st.markdown("#### Stage Comparison Charts")
                         
                         stages = [d['Stage'] for d in stage_data]
@@ -621,7 +621,7 @@ if edf_file is not None:
         st.markdown("---")
         
         # --------------------------------------------------------------
-        # EXPORT OPTIONS (Feature #10)
+        # EXPORT OPTIONS
         # --------------------------------------------------------------
         st.markdown("### 📤 Export & Download Options")
         
