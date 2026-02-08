@@ -872,11 +872,6 @@ if batch_files:
             status_text.text(f"📂 Processing {current_file.name} ({idx+1}/{n_files})...")
             progress_bar.progress((idx + 0.1) / n_files)
 
-            # BATCH MODE ERROR HANDLING PATCH
-# Add this improved error handling to your batch processing loop
-
-# Replace the try/except block in batch processing (around line 180-220) with this:
-
 try:
     # Load file
     raw, temp_path = load_edf_file(current_file, f"temp_batch_{idx}.edf")
