@@ -876,27 +876,27 @@ if batch_files:
         # Load file
         raw, temp_path = load_edf_file(current_file, f"temp_batch_{idx}.edf")
         
-    if raw is None:
-        st.warning(f"⚠️ Skipping {current_file.name}: Could not load file")
-        continue
+        if raw is None:
+            st.warning(f"⚠️ Skipping {current_file.name}: Could not load file")
+            continue
+            
+        # Validate file before analysis
+        # Check that all channels have data
+        if raw.times[-1] == 0:
+            st.warning(f"⚠️ Skipping {current_file.name}: File has no duration")
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            continue
         
-    # Validate file before analysis
-    # Check that all channels have data
-    if raw.times[-1] == 0:
-        st.warning(f"⚠️ Skipping {current_file.name}: File has no duration")
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-        continue
-    
-    # Run analysis with additional error handling
-    analyzer = PSGAnalyzer(raw, temp_path)
-    
-    # Check for SpO2 channel
-    if not analyzer.spo2_ch:
-        st.warning(f"⚠️ Skipping {current_file.name}: No SpO₂ channel found")
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-        continue
+        # Run analysis with additional error handling
+        analyzer = PSGAnalyzer(raw, temp_path)
+        
+        # Check for SpO2 channel
+        if not analyzer.spo2_ch:
+            st.warning(f"⚠️ Skipping {current_file.name}: No SpO₂ channel found")
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            continue
         
         # Run analysis
         results = analyzer.run_full_analysis(
