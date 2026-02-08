@@ -273,9 +273,6 @@ if edf_file is not None:
             else:
                 baseline_text = 'Auto' if params['preset_baseline'] == 0 else f'{params["preset_baseline"]:.1f}%'
                 st.write(f"**Baseline:** {baseline_text}")
-                ```
-                
-                ---
                                                                                            
         # Warnings for non-default
         if preset_choice == "Azarbarzin 2019 (Default)":
