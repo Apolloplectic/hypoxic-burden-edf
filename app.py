@@ -967,56 +967,56 @@ except Exception as e:
         os.remove(temp_path)
     continue
             
-        # Update progress
-        st.session_state.batch_files_processed = idx + 1
-        st.session_state.batch_progress = idx + 1
-        progress_bar.progress((idx + 1) / n_files)
+    # Update progress
+    st.session_state.batch_files_processed = idx + 1
+    st.session_state.batch_progress = idx + 1
+    progress_bar.progress((idx + 1) / n_files)
+    
+    # Generate master summary and ZIP
+    status_text.text("📊 Generating master summary...")
+    
+    pdf_generator = PDFReportGenerator()
+    master_buffer = pdf_generator.generate_batch_summary(batch_summary_data)
+    
+    # Create ZIP file
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        # Add individual reports
+        for filename, pdf_buffer in st.session_state.batch_results:
+            zf.writestr(
+                f"Reports/HB_Report_{filename.replace('.edf', '')}.pdf",
+                pdf_buffer.getvalue()
+            )
         
-        # Generate master summary and ZIP
-        status_text.text("📊 Generating master summary...")
-        
-        pdf_generator = PDFReportGenerator()
-        master_buffer = pdf_generator.generate_batch_summary(batch_summary_data)
-        
-        # Create ZIP file
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-            # Add individual reports
-            for filename, pdf_buffer in st.session_state.batch_results:
-                zf.writestr(
-                    f"Reports/HB_Report_{filename.replace('.edf', '')}.pdf",
-                    pdf_buffer.getvalue()
-                )
-            
-            # Add master summary
-            zf.writestr("Master_Summary.pdf", master_buffer.getvalue())
-        
-        zip_buffer.seek(0)
-        
-        # Success message
-        progress_bar.progress(1.0)
-        status_text.text("✅ Batch processing complete!")
-        st.success(f"**Batch Complete!** Generated {len(st.session_state.batch_results)} reports.")
-        
-        # Download ZIP
-        st.download_button(
-            label="📥 Download All Reports (ZIP)",
-            data=zip_buffer.getvalue(),
-            file_name=f"HB_Batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-            mime="application/zip",
-            type="primary",
-            use_container_width=True
-        )
-        
-        # Reset batch state
-        if st.button("🔄 Process Another Batch", use_container_width=True):
-            for key in ['batch_running', 'batch_paused', 'batch_progress', 'batch_files_processed']:
-                if 'progress' in key or 'processed' in key:
-                    st.session_state[key] = 0
-                else:
-                    st.session_state[key] = False
-            st.session_state.batch_results = []
-            st.rerun()
+        # Add master summary
+        zf.writestr("Master_Summary.pdf", master_buffer.getvalue())
+    
+    zip_buffer.seek(0)
+    
+    # Success message
+    progress_bar.progress(1.0)
+    status_text.text("✅ Batch processing complete!")
+    st.success(f"**Batch Complete!** Generated {len(st.session_state.batch_results)} reports.")
+    
+    # Download ZIP
+    st.download_button(
+        label="📥 Download All Reports (ZIP)",
+        data=zip_buffer.getvalue(),
+        file_name=f"HB_Batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+        mime="application/zip",
+        type="primary",
+        use_container_width=True
+    )
+    
+    # Reset batch state
+    if st.button("🔄 Process Another Batch", use_container_width=True):
+        for key in ['batch_running', 'batch_paused', 'batch_progress', 'batch_files_processed']:
+            if 'progress' in key or 'processed' in key:
+                st.session_state[key] = 0
+            else:
+                st.session_state[key] = False
+        st.session_state.batch_results = []
+        st.rerun()
 
 # --------------------------------------------------------------
 # FOOTER
