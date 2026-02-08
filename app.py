@@ -871,63 +871,101 @@ if batch_files:
             current_file = batch_files[idx]
             status_text.text(f"📂 Processing {current_file.name} ({idx+1}/{n_files})...")
             progress_bar.progress((idx + 0.1) / n_files)
-            
-            try:
-                # Load file
-                raw, temp_path = load_edf_file(current_file, f"temp_batch_{idx}.edf")
-                
-                if raw is None:
-                    st.warning(f"⚠️ Skipping {current_file.name}: Could not load file")
-                    continue
-                
-                # Run analysis
-                analyzer = PSGAnalyzer(raw, temp_path)
-                
-                results = analyzer.run_full_analysis(
-                    pre_event_sec=100,
-                    desat_start_sec=60,
-                    desat_end_sec=120,
-                    artifact_filter="Off",
-                    desat_threshold=desat_thresh_val,
-                    use_global_hb=batch_use_global_hb,
-                    preset_baseline=0.0,
-                    use_mit_st=False
-                )
-                
-                # Generate PDF
-                pdf_generator = PDFReportGenerator()
-                buffer = pdf_generator.generate_report(
-                    filename=current_file.name,
-                    results=results,
-                    proof_mode=batch_proof_mode,
-                    include_stages=batch_include_stages
-                )
-                
-                # Store results
-                st.session_state.batch_results.append((current_file.name, buffer))
-                
-                # Add to summary
-                summary_row = {
-                    'File': current_file.name,
-                    'Duration (h)': f"{results['duration']:.1f}",
-                    'AHI': f"{results['ahi']:.1f}",
-                    'ODI': f"{results['odi']:.1f}",
-                    'Obstructive HB': f"{results['total_hb']:.2f}"
-                }
-                
-                if results.get('global_hb') is not None:
-                    summary_row['Global HB'] = f"{results['global_hb']:.2f}"
-                    summary_row['Baseline'] = f"{results['baseline_used']:.1f}%"
-                
-                batch_summary_data.append(summary_row)
-                
-                # Cleanup
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                
-            except Exception as e:
-                st.error(f"❌ Error processing {current_file.name}: {str(e)}")
-                continue
+
+            # BATCH MODE ERROR HANDLING PATCH
+# Add this improved error handling to your batch processing loop
+
+# Replace the try/except block in batch processing (around line 180-220) with this:
+
+try:
+    # Load file
+    raw, temp_path = load_edf_file(current_file, f"temp_batch_{idx}.edf")
+    
+    if raw is None:
+        st.warning(f"⚠️ Skipping {current_file.name}: Could not load file")
+        continue
+    
+    # Validate file before analysis
+    # Check that all channels have data
+    if raw.times[-1] == 0:
+        st.warning(f"⚠️ Skipping {current_file.name}: File has no duration")
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        continue
+    
+    # Run analysis with additional error handling
+    analyzer = PSGAnalyzer(raw, temp_path)
+    
+    # Check for SpO2 channel
+    if not analyzer.spo2_ch:
+        st.warning(f"⚠️ Skipping {current_file.name}: No SpO₂ channel found")
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        continue
+    
+    # Run analysis
+    results = analyzer.run_full_analysis(
+        pre_event_sec=100,
+        desat_start_sec=60,
+        desat_end_sec=120,
+        artifact_filter="Off",
+        desat_threshold=desat_thresh_val,
+        use_global_hb=batch_use_global_hb,
+        preset_baseline=0.0,
+        use_mit_st=False
+    )
+    
+    # Generate PDF
+    pdf_generator = PDFReportGenerator()
+    buffer = pdf_generator.generate_report(
+        filename=current_file.name,
+        results=results,
+        proof_mode=batch_proof_mode,
+        include_stages=batch_include_stages
+    )
+    
+    # Store results
+    st.session_state.batch_results.append((current_file.name, buffer))
+    
+    # Add to summary
+    summary_row = {
+        'File': current_file.name,
+        'Duration (h)': f"{results['duration']:.1f}",
+        'AHI': f"{results['ahi']:.1f}",
+        'ODI': f"{results['odi']:.1f}",
+        'Obstructive HB': f"{results['total_hb']:.2f}"
+    }
+    
+    if results.get('global_hb') is not None:
+        summary_row['Global HB'] = f"{results['global_hb']:.2f}"
+        summary_row['Baseline'] = f"{results['baseline_used']:.1f}%"
+    
+    batch_summary_data.append(summary_row)
+    
+    # Cleanup
+    if os.path.exists(temp_path):
+        os.remove(temp_path)
+    
+    st.success(f"✅ Completed: {current_file.name}")
+    
+except ValueError as e:
+    if "All arrays must be of the same length" in str(e):
+        st.error(f"❌ {current_file.name}: Mismatched channel lengths (corrupted file)")
+    else:
+        st.error(f"❌ {current_file.name}: {str(e)}")
+    
+    # Cleanup on error
+    if 'temp_path' in locals() and os.path.exists(temp_path):
+        os.remove(temp_path)
+    continue
+
+except Exception as e:
+    st.error(f"❌ Error processing {current_file.name}: {str(e)}")
+    
+    # Cleanup on error
+    if 'temp_path' in locals() and os.path.exists(temp_path):
+        os.remove(temp_path)
+    continue
             
             # Update progress
             st.session_state.batch_files_processed = idx + 1
