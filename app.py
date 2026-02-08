@@ -271,8 +271,12 @@ if edf_file is not None:
                     help="0 = automatic 95th percentile"
                 )
             else:
-                st.write(f"**Baseline:** {'Auto' if params['preset_baseline'] == 0 else f'{params[\"preset_baseline\"]:.1f}%'}")
-        
+                baseline_text = 'Auto' if params['preset_baseline'] == 0 else f'{params["preset_baseline"]:.1f}%'
+                st.write(f"**Baseline:** {baseline_text}")
+                ```
+                
+                ---
+                                                                                           
         # Warnings for non-default
         if preset_choice == "Azarbarzin 2019 (Default)":
             st.success("✅ Using validated Azarbarzin 2019 parameters")
