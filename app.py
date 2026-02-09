@@ -110,41 +110,37 @@ display_analysis_history()
 PRESETS = {
     "Azarbarzin 2019 (Default)": {
         'pre_event_sec': 100,
-        'desat_start_sec': 0,      # Changed: Start AT event start (not 60s before)
-        'desat_end_sec': 90,       # Changed: 90s after end (not 120s)
+        'desat_start_sec': 0,
+        'desat_end_sec': 90,
         'desat_threshold': 3,
         'artifact_filter': 'Off',
-        'use_global_hb': True,
         'preset_baseline': 0.0,
         'description': "Exact parameters from Azarbarzin et al. EHJ 2019: Baseline=MAXIMUM SpO2 in 100s before event START, desaturation window from event START to 90s after END"
     },
     "AASM 2023 Standard": {
         'pre_event_sec': 120,
-        'desat_start_sec': 0,      # Changed for consistency
+        'desat_start_sec': 0,
         'desat_end_sec': 90,
         'desat_threshold': 3,
         'artifact_filter': 'Mild (10%/s)',
-        'use_global_hb': True,
         'preset_baseline': 0.0,
         'description': "Current clinical practice guidelines with conservative parameters"
     },
     "Conservative (High Specificity)": {
         'pre_event_sec': 100,
-        'desat_start_sec': 0,      # Changed for consistency
+        'desat_start_sec': 0,
         'desat_end_sec': 90,
         'desat_threshold': 4,
         'artifact_filter': 'Strict (5%/s)',
-        'use_global_hb': False,
         'preset_baseline': 0.0,
         'description': "Minimizes false positives - only counts definite events (4% threshold)"
     },
     "Aggressive (High Sensitivity)": {
         'pre_event_sec': 80,
         'desat_start_sec': 0,
-        'desat_end_sec': 150,     # Longer window to catch delayed desaturations
+        'desat_end_sec': 150,
         'desat_threshold': 3,
         'artifact_filter': 'Off',
-        'use_global_hb': True,
         'preset_baseline': 0.0,
         'description': "Maximizes event detection - catches all possible desaturations with extended window"
     },
@@ -154,7 +150,6 @@ PRESETS = {
         'desat_end_sec': 90,
         'desat_threshold': 3,
         'artifact_filter': 'Off',
-        'use_global_hb': True,
         'preset_baseline': 0.0,
         'description': "Manually configure all parameters using sliders"
     }
@@ -362,52 +357,50 @@ if edf_file is not None:
                 )
                 params['desat_threshold'] = 3 if "3%" in scoring_rule else 4
             
-            with col4:
-                params['use_global_hb'] = st.checkbox(
-                    "Calculate Global HB",
-                    value=params['use_global_hb'],
-                    help="Total oxygen debt over entire study"
-                )
+            # Global HB baseline configuration (always calculated)
+            st.markdown("#### 🌍 Global HB Baseline")
+            st.caption("Global HB is always calculated for comparison. Configure the baseline method:")
             
-            if params['use_global_hb']:
-                baseline_method = st.radio(
-                    "Baseline SpO₂ method",
-                    ["Automatic (95th percentile)", "Manual entry"],
-                    help="Auto removes outliers/desaturations"
+            baseline_method = st.radio(
+                "Baseline SpO₂ method",
+                ["Automatic (95th percentile)", "Manual entry"],
+                help="Auto uses 95th percentile to filter outliers/desaturations"
+            )
+            
+            if baseline_method == "Manual entry":
+                params['preset_baseline'] = st.slider(
+                    "Baseline SpO₂ (%)",
+                    min_value=80.0,
+                    max_value=100.0,
+                    value=95.0,
+                    step=0.1,
+                    format="%.1f"
                 )
-                
-                if baseline_method == "Manual entry":
-                    params['preset_baseline'] = st.slider(
-                        "Baseline SpO₂ (%)",
-                        min_value=80.0,
-                        max_value=100.0,
-                        value=95.0,
-                        step=0.1,
-                        format="%.1f"
-                    )
-                else:
-                    params['preset_baseline'] = 0.0
             else:
                 params['preset_baseline'] = 0.0
         
         else:
             # Show preset values (read-only)
             st.markdown("#### 📋 Preset Configuration")
+            
+            st.markdown("##### Event-Specific HB Parameters:")
             col1, col2 = st.columns(2)
             
             with col1:
                 st.write(f"**Pre-event baseline:** {params['pre_event_sec']}s before START")
+                st.write(f"**Baseline method:** MAXIMUM SpO₂ (per Azarbarzin)")
                 st.write(f"**Desat start offset:** {params['desat_start_sec']}s from START")
-                st.write(f"**Desat end:** {params['desat_end_sec']}s after end")
             
             with col2:
+                st.write(f"**Desat end:** {params['desat_end_sec']}s after end")
                 st.write(f"**Artifact filter:** {params['artifact_filter']}")
                 st.write(f"**Desat threshold:** {params['desat_threshold']}%")
-                st.write(f"**Global HB:** {'Enabled' if params['use_global_hb'] else 'Disabled'}")
             
-            if params['use_global_hb']:
-                baseline_text = 'Auto (95th percentile)' if params['preset_baseline'] == 0 else f'{params["preset_baseline"]:.1f}%'
-                st.write(f"**Baseline SpO₂:** {baseline_text}")
+            st.markdown("##### Global HB Parameters:")
+            baseline_text = 'Auto (95th percentile)' if params['preset_baseline'] == 0 else f'{params["preset_baseline"]:.1f}%'
+            st.write(f"**Global baseline:** {baseline_text} (for whole-study burden)")
+            st.caption("ℹ️ Note: Event-specific HB uses MAXIMUM in 100s before each event. Global HB uses this baseline for entire study.")
+        
         
         # Store in session state
         st.session_state.analysis_params = params
@@ -478,7 +471,7 @@ if edf_file is not None:
                         desat_end_sec=preset_params['desat_end_sec'],
                         artifact_filter=preset_params['artifact_filter'],
                         desat_threshold=preset_params['desat_threshold'],
-                        use_global_hb=preset_params['use_global_hb'],
+                        use_global_hb=True,  # Always calculate Global HB
                         preset_baseline=preset_params['preset_baseline'],
                         use_mit_st=st.session_state.use_mit_st
                     )
@@ -748,7 +741,7 @@ if edf_file is not None:
                     desat_end_sec=desat_end_sec,
                     artifact_filter=artifact_filter,
                     desat_threshold=desat_threshold,
-                    use_global_hb=use_global_hb,
+                    use_global_hb=True,  # Always calculate Global HB
                     preset_baseline=preset_baseline,
                     use_mit_st=st.session_state.use_mit_st
                 )
@@ -1553,12 +1546,8 @@ if batch_files:
                 index=0,
                 key="batch_desat"
             )
-            batch_use_global_hb = st.checkbox(
-                "Calculate Global HB",
-                value=True,
-                key="batch_global_hb",
-                help="Calculate global hypoxic burden for each file"
-            )
+        
+        st.caption("ℹ️ Global HB is always calculated for all files")
     
     # Initialize batch session state
     for key in ['batch_running', 'batch_paused', 'batch_progress', 'batch_results', 'batch_files_processed']:
@@ -1655,7 +1644,7 @@ if batch_files:
                     desat_end_sec=120,
                     artifact_filter="Off",
                     desat_threshold=desat_thresh_val,
-                    use_global_hb=batch_use_global_hb,
+                    use_global_hb=True,  # Always calculate Global HB
                     preset_baseline=0.0,
                     use_mit_st=False
                 )
