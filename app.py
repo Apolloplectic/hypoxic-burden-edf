@@ -54,7 +54,7 @@ st.markdown("### 📁 Upload Mode")
 analysis_mode = st.radio(
     "Select Analysis Mode:",
     ["Single File Analysis", "Treatment Comparison (Pre-Treatment vs. Treatment)"],
-    help="Compare pre-treatment vs post-treatment PSG studies"
+    help="Compare pre-treatment vs treatment PSG studies"
 )
 
 if analysis_mode == "Single File Analysis":
@@ -84,9 +84,9 @@ else:  # Treatment Comparison mode
         )
     
     with col2:
-        st.markdown("**Post-Treatment**")
+        st.markdown("**Treatment**")
         post_treatment_file = st.file_uploader(
-            "Upload post-treatment PSG",
+            "Upload treatment PSG",
             type=["edf"],
             help="PSG after treatment (CPAP, Inspire, etc.)",
             key="post_treatment_upload"
@@ -1088,7 +1088,7 @@ elif analysis_mode == "Treatment Comparison (Before/After)" and pre_treatment_fi
     with st.spinner("📂 Loading pre-treatment PSG..."):
         raw_pre, temp_path_pre = load_edf_file(pre_treatment_file)
     
-    with st.spinner("📂 Loading post-treatment PSG..."):
+    with st.spinner("📂 Loading treatment PSG..."):
         raw_post, temp_path_post = load_edf_file(post_treatment_file)
     
     if raw_pre is None or raw_post is None:
@@ -1110,7 +1110,7 @@ elif analysis_mode == "Treatment Comparison (Before/After)" and pre_treatment_fi
         validator_pre.display_results(show_info=False)
     
     with col2:
-        st.markdown("#### Post-Treatment")
+        st.markdown("#### Treatment")
         validator_post = PSGValidator(raw_post, analyzer_post)
         validation_post = validator_post.validate_all()
         validator_post.display_results(show_info=False)
@@ -1149,8 +1149,8 @@ elif analysis_mode == "Treatment Comparison (Before/After)" and pre_treatment_fi
                 use_mit_st=st.session_state.use_mit_st
             )
         
-        # Analyze post-treatment
-        with st.spinner("🔬 Analyzing post-treatment PSG..."):
+        # Analyze treatment
+        with st.spinner("🔬 Analyzing treatment PSG..."):
             results_post = analyzer_post.run_full_analysis(
                 pre_event_sec=params['pre_event_sec'],
                 desat_start_sec=params['desat_start_sec'],
@@ -1177,7 +1177,7 @@ elif analysis_mode == "Treatment Comparison (Before/After)" and pre_treatment_fi
                 f"{results_pre['total_hb']:.1f}",
                 f"{results_pre.get('global_hb', 0):.1f}"
             ],
-            'Post-Treatment': [
+            'Treatment': [
                 f"{results_post['ahi']:.1f}",
                 f"{results_post['odi']:.1f}",
                 f"{results_post['total_hb']:.1f}",
@@ -1267,7 +1267,7 @@ elif analysis_mode == "Treatment Comparison (Before/After)" and pre_treatment_fi
         width = 0.35
         
         ax1.bar(x - width/2, pre_values, width, label='Pre-Treatment', color='#e74c3c', alpha=0.8)
-        ax1.bar(x + width/2, post_values, width, label='Post-Treatment', color='#27ae60', alpha=0.8)
+        ax1.bar(x + width/2, post_values, width, label='Treatment', color='#27ae60', alpha=0.8)
         ax1.set_ylabel('Events per hour')
         ax1.set_title('AHI & ODI Comparison')
         ax1.set_xticks(x)
@@ -1283,7 +1283,7 @@ elif analysis_mode == "Treatment Comparison (Before/After)" and pre_treatment_fi
         x2 = np.arange(len(hb_metrics))
         
         ax2.bar(x2 - width/2, hb_pre_values, width, label='Pre-Treatment', color='#e74c3c', alpha=0.8)
-        ax2.bar(x2 + width/2, hb_post_values, width, label='Post-Treatment', color='#27ae60', alpha=0.8)
+        ax2.bar(x2 + width/2, hb_post_values, width, label='Treatment', color='#27ae60', alpha=0.8)
         ax2.set_ylabel('(%·min)/h')
         ax2.set_title('Hypoxic Burden Comparison')
         ax2.set_xticks(x2)
@@ -1323,7 +1323,7 @@ elif analysis_mode == "Treatment Comparison (Before/After)" and pre_treatment_fi
             ============================
             
             Pre-Treatment File: {pre_treatment_file.name}
-            Post-Treatment File: {post_treatment_file.name}
+            Treatment File: {treatment_file.name}
             
             PRIMARY OUTCOMES:
             - AHI: {results_pre['ahi']:.1f} → {results_post['ahi']:.1f} ({ahi_improvement:.1f}% improvement)
@@ -1339,7 +1339,7 @@ elif analysis_mode == "Treatment Comparison (Before/After)" and pre_treatment_fi
             )
             
             st.download_button(
-                label="⬇️ Download Post-Treatment Report",
+                label="⬇️ Download Treatment Report",
                 data=buffer_post,
                 file_name=f"post_treatment_{post_treatment_file.name.replace('.edf', '')}_report.pdf",
                 mime="application/pdf"
