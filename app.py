@@ -1128,8 +1128,8 @@ if edf_file is not None:
             else:
                 spo2_data_plot = spo2_data
             
-            # Create figure
-            fig = go.Figure()
+            # Create figure with secondary y-axis for airflow
+            fig = make_subplots(specs=[[{"secondary_y": True}]])
             
             # Add sleep stage background shading
             if stages is not None and len(stages) > 0:
@@ -1173,7 +1173,7 @@ if edf_file is not None:
                     annotation_position="right"
                 )
             
-            # Add SpO₂ trace
+            # Add SpO₂ trace (primary y-axis)
             fig.add_trace(go.Scattergl(
                 x=spo2_data_plot['time'] / 3600,  # Convert to hours
                 y=spo2_data_plot['spo2'],
@@ -1183,7 +1183,42 @@ if edf_file is not None:
                 hovertemplate='<b>Time:</b> %{x:.2f}h<br>' +
                               '<b>SpO₂:</b> %{y:.1f}%<br>' +
                               '<extra></extra>'
-            ))
+            ), secondary_y=False)
+            
+            # Add airflow trace (secondary y-axis) if available
+            if analyzer.df_flow is not None and len(analyzer.df_flow) > 0:
+                flow_data = analyzer.df_flow.copy()
+                
+                # Downsample flow data to match SpO2 for performance
+                if len(flow_data) > 20000:
+                    downsample_factor = max(1, len(flow_data) // 15000)
+                    flow_data_plot = flow_data.iloc[::downsample_factor].copy()
+                else:
+                    flow_data_plot = flow_data
+                
+                # Normalize flow to 0-1 range for visualization
+                flow_normalized = flow_data_plot['flow'].values
+                flow_min = np.percentile(flow_normalized, 5)
+                flow_max = np.percentile(flow_normalized, 95)
+                
+                if flow_max != flow_min:
+                    flow_normalized = (flow_normalized - flow_min) / (flow_max - flow_min)
+                    # Center around 0.5 for better visualization
+                    flow_normalized = flow_normalized - 0.5
+                else:
+                    flow_normalized = np.zeros_like(flow_normalized)
+                
+                fig.add_trace(go.Scattergl(
+                    x=flow_data_plot['time'] / 3600,
+                    y=flow_normalized,
+                    mode='lines',
+                    name='Airflow',
+                    line=dict(color='#9467bd', width=1.0, dash='dot'),
+                    opacity=0.7,
+                    hovertemplate='<b>Time:</b> %{x:.2f}h<br>' +
+                                  '<b>Airflow:</b> %{y:.2f}<br>' +
+                                  '<extra></extra>'
+                ), secondary_y=True)
             
             # Add event highlighting (red rectangles)
             if events and len(events) > 0:
@@ -1221,11 +1256,10 @@ if edf_file is not None:
                     name=f'Events (n={len(events)})'
                 ))
             
-            # Configure layout
+            # Configure layout with dual y-axes
             fig.update_layout(
-                title='SpO₂ and Respiratory Events Over Time',
+                title='SpO₂, Airflow, and Respiratory Events Over Time',
                 xaxis_title='Time (hours)',
-                yaxis_title='SpO₂ (%)',
                 height=500,
                 hovermode='x unified',
                 showlegend=True,
@@ -1239,11 +1273,22 @@ if edf_file is not None:
                 xaxis=dict(
                     rangeslider=dict(visible=True, thickness=0.05),
                     type='linear'
-                ),
-                yaxis=dict(
-                    range=[max(70, spo2_data_plot['spo2'].min() - 5), 
-                           min(100, spo2_data_plot['spo2'].max() + 2)]
                 )
+            )
+            
+            # Set y-axes titles and ranges
+            fig.update_yaxes(
+                title_text="SpO₂ (%)",
+                range=[max(70, spo2_data_plot['spo2'].min() - 5), 
+                       min(100, spo2_data_plot['spo2'].max() + 2)],
+                secondary_y=False
+            )
+            
+            fig.update_yaxes(
+                title_text="Airflow (normalized)",
+                range=[-1, 1],
+                secondary_y=True,
+                showgrid=False  # Don't show gridlines for airflow to reduce clutter
             )
             
             # Display interactive plot
@@ -1260,10 +1305,17 @@ if edf_file is not None:
                 - 👁️ **Legend:** Click legend items to show/hide data layers
                 
                 **Visual Elements:**
-                - **Blue line:** SpO₂ saturation over time
+                - **Blue solid line (left axis):** SpO₂ saturation over time
+                - **Purple dotted line (right axis):** Airflow signal (normalized, if available)
                 - **Red shading:** Respiratory events (apnea/hypopnea)
                 - **Background colors:** Sleep stages (gray=Wake, light blue=N1, medium blue=N2, dark blue=N3, purple=REM)
                 - **Green dashed line:** Baseline SpO₂ reference
+                
+                **Clinical Interpretation:**
+                - **Apnea events:** Flat airflow (0) with delayed SpO₂ drop
+                - **Hypopnea events:** Reduced airflow (partial reduction) with SpO₂ drop
+                - **Normal breathing:** Rhythmic airflow oscillations, stable SpO₂
+                - **Event recovery:** Airflow resumes → SpO₂ recovers (often with overshoot)
                 """)
         
         except ImportError:
