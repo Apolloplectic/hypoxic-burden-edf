@@ -678,9 +678,10 @@ class PSGAnalyzer:
             if len(base_df) == 0:
                 continue
             
-            # Use 98th percentile for baseline (per Azarbarzin paper)
-            # This is more robust than max() and filters out transient spikes
-            baseline = np.percentile(base_df['spo2'], 98)
+            # Use MAXIMUM SpO2 for baseline (per Azarbarzin paper)
+            # "the maximum SpO2 value during a 100-second search window 
+            # immediately preceding the event"
+            baseline = base_df['spo2'].max()
             
             # Get desaturation window
             # Azarbarzin: FROM event start TO 90s after event end
@@ -811,7 +812,7 @@ class PSGAnalyzer:
                 start_t = ev['start']  # Use START instead of END
                 end_t = ev['end']
                 
-                # Get baseline (100s before event START, 98th percentile)
+                # Get baseline (100s before event START, MAXIMUM value)
                 base_df = self.df_spo2[
                     (self.df_spo2['time'] >= start_t - pre_event_sec) &
                     (self.df_spo2['time'] < start_t)
@@ -820,7 +821,7 @@ class PSGAnalyzer:
                 if len(base_df) == 0:
                     continue
                 
-                baseline = np.percentile(base_df['spo2'], 98)  # 98th percentile
+                baseline = base_df['spo2'].max()  # Use max() per paper
                 
                 # Get desaturation window (from START to END+90s)
                 win_df = self.df_spo2[
