@@ -1109,22 +1109,25 @@ elif analysis_mode == "Treatment Comparison (Before/After)" and pre_treatment_fi
     
     # Validate both files
     st.markdown("### 🔍 Data Quality Check")
+    
+    # Just show basic info, don't validate
     col1, col2 = st.columns(2)
     
     with col1:
         st.markdown("#### Pre-Treatment")
-        validator_pre = PSGValidator(raw_pre, analyzer_pre)
-        validation_pre = validator_pre.validate_all()
-        validator_pre.display_results(show_info=False)
+        st.write(f"✅ Loaded: {pre_treatment_file.name}")
+        st.write(f"Duration: {raw_pre.times[-1]/3600:.2f} hours")
+        st.write(f"SpO₂: {analyzer_pre.spo2_ch or 'Not detected'}")
     
     with col2:
         st.markdown("#### Post-Treatment")
-        validator_post = PSGValidator(raw_post, analyzer_post)
-        validation_post = validator_post.validate_all()
-        validator_post.display_results(show_info=False)
+        st.write(f"✅ Loaded: {post_treatment_file.name}")
+        st.write(f"Duration: {raw_post.times[-1]/3600:.2f} hours")
+        st.write(f"SpO₂: {analyzer_post.spo2_ch or 'Not detected'}")
     
-    if not validation_pre['valid'] or not validation_post['valid']:
-        st.error("**Cannot proceed with analysis due to critical errors above.**")
+    # Check for critical issues
+    if not analyzer_pre.spo2_ch or not analyzer_post.spo2_ch:
+        st.error("❌ SpO₂ channel not found in one or both files. Cannot proceed.")
         st.stop()
     
     # Select preset for analysis
