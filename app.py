@@ -110,46 +110,51 @@ display_analysis_history()
 PRESETS = {
     "Azarbarzin 2019 (Default)": {
         'pre_event_sec': 100,
-        'desat_start_sec': 0,
-        'desat_end_sec': 90,
+        'desat_start_sec': 60,
+        'desat_end_sec': 120,
         'desat_threshold': 3,
         'artifact_filter': 'Off',
+        'use_global_hb': True,
         'preset_baseline': 0.0,
-        'description': "Exact parameters from Azarbarzin et al. EHJ 2019: Baseline=MAXIMUM SpO2 in 100s before event START, desaturation window from event START to 90s after END"
+        'description': "Validated parameters from the original Azarbarzin et al. study (EHJ 2019)"
     },
     "AASM 2023 Standard": {
         'pre_event_sec': 120,
-        'desat_start_sec': 0,
+        'desat_start_sec': 60,
         'desat_end_sec': 90,
         'desat_threshold': 3,
         'artifact_filter': 'Mild (10%/s)',
+        'use_global_hb': True,
         'preset_baseline': 0.0,
         'description': "Current clinical practice guidelines with conservative parameters"
     },
     "Conservative (High Specificity)": {
         'pre_event_sec': 100,
-        'desat_start_sec': 0,
-        'desat_end_sec': 90,
+        'desat_start_sec': 60,
+        'desat_end_sec': 120,
         'desat_threshold': 4,
         'artifact_filter': 'Strict (5%/s)',
+        'use_global_hb': False,
         'preset_baseline': 0.0,
         'description': "Minimizes false positives - only counts definite events (4% threshold)"
     },
     "Aggressive (High Sensitivity)": {
         'pre_event_sec': 80,
-        'desat_start_sec': 0,
+        'desat_start_sec': 45,
         'desat_end_sec': 150,
         'desat_threshold': 3,
         'artifact_filter': 'Off',
+        'use_global_hb': True,
         'preset_baseline': 0.0,
-        'description': "Maximizes event detection - catches all possible desaturations with extended window"
+        'description': "Maximizes event detection - catches all possible desaturations"
     },
     "Custom": {
         'pre_event_sec': 100,
-        'desat_start_sec': 0,
-        'desat_end_sec': 90,
+        'desat_start_sec': 60,
+        'desat_end_sec': 120,
         'desat_threshold': 3,
         'artifact_filter': 'Off',
+        'use_global_hb': True,
         'preset_baseline': 0.0,
         'description': "Manually configure all parameters using sliders"
     }
@@ -313,30 +318,30 @@ if edf_file is not None:
             
             with col1:
                 params['pre_event_sec'] = st.slider(
-                    "Pre-event baseline window (s before START)",
+                    "Pre-event baseline window (s)",
                     min_value=30,
                     max_value=180,
                     value=params['pre_event_sec'],
                     step=1,
-                    help="Time before EVENT START to measure baseline SpO₂ (Azarbarzin: 100s, uses MAXIMUM value)"
+                    help="Time before event to calculate baseline SpO₂"
                 )
                 params['desat_start_sec'] = st.slider(
-                    "Desaturation start offset (s from event START)",
-                    min_value=0,
-                    max_value=30,
+                    "Desaturation start (s before event end)",
+                    min_value=15,
+                    max_value=120,
                     value=params['desat_start_sec'],
                     step=1,
-                    help="Offset from event START (0 = start at event onset, per Azarbarzin)"
+                    help="Start of desaturation window"
                 )
             
             with col2:
                 params['desat_end_sec'] = st.slider(
-                    "Desaturation end (s after event END)",
+                    "Desaturation end (s after event end)",
                     min_value=60,
                     max_value=240,
                     value=params['desat_end_sec'],
                     step=1,
-                    help="Time after event END to search for nadir (Azarbarzin: 90s)"
+                    help="End of desaturation window (recovery time)"
                 )
                 params['artifact_filter'] = st.selectbox(
                     "SpO₂ artifact filter",
@@ -357,50 +362,52 @@ if edf_file is not None:
                 )
                 params['desat_threshold'] = 3 if "3%" in scoring_rule else 4
             
-            # Global HB baseline configuration (always calculated)
-            st.markdown("#### 🌍 Global HB Baseline")
-            st.caption("Global HB is always calculated for comparison. Configure the baseline method:")
-            
-            baseline_method = st.radio(
-                "Baseline SpO₂ method",
-                ["Automatic (95th percentile)", "Manual entry"],
-                help="Auto uses 95th percentile to filter outliers/desaturations"
-            )
-            
-            if baseline_method == "Manual entry":
-                params['preset_baseline'] = st.slider(
-                    "Baseline SpO₂ (%)",
-                    min_value=80.0,
-                    max_value=100.0,
-                    value=95.0,
-                    step=0.1,
-                    format="%.1f"
+            with col4:
+                params['use_global_hb'] = st.checkbox(
+                    "Calculate Global HB",
+                    value=params['use_global_hb'],
+                    help="Total oxygen debt over entire study"
                 )
+            
+            if params['use_global_hb']:
+                baseline_method = st.radio(
+                    "Baseline SpO₂ method",
+                    ["Automatic (95th percentile)", "Manual entry"],
+                    help="Auto removes outliers/desaturations"
+                )
+                
+                if baseline_method == "Manual entry":
+                    params['preset_baseline'] = st.slider(
+                        "Baseline SpO₂ (%)",
+                        min_value=80.0,
+                        max_value=100.0,
+                        value=95.0,
+                        step=0.1,
+                        format="%.1f"
+                    )
+                else:
+                    params['preset_baseline'] = 0.0
             else:
                 params['preset_baseline'] = 0.0
         
         else:
             # Show preset values (read-only)
             st.markdown("#### 📋 Preset Configuration")
-            
-            st.markdown("##### Event-Specific HB Parameters:")
             col1, col2 = st.columns(2)
             
             with col1:
-                st.write(f"**Pre-event baseline:** {params['pre_event_sec']}s before START")
-                st.write(f"**Baseline method:** MAXIMUM SpO₂ (per Azarbarzin)")
-                st.write(f"**Desat start offset:** {params['desat_start_sec']}s from START")
+                st.write(f"**Pre-event baseline:** {params['pre_event_sec']}s")
+                st.write(f"**Desat start:** {params['desat_start_sec']}s before end")
+                st.write(f"**Desat end:** {params['desat_end_sec']}s after end")
             
             with col2:
-                st.write(f"**Desat end:** {params['desat_end_sec']}s after end")
                 st.write(f"**Artifact filter:** {params['artifact_filter']}")
                 st.write(f"**Desat threshold:** {params['desat_threshold']}%")
+                st.write(f"**Global HB:** {'Enabled' if params['use_global_hb'] else 'Disabled'}")
             
-            st.markdown("##### Global HB Parameters:")
-            baseline_text = 'Auto (95th percentile)' if params['preset_baseline'] == 0 else f'{params["preset_baseline"]:.1f}%'
-            st.write(f"**Global baseline:** {baseline_text} (for whole-study burden)")
-            st.caption("ℹ️ Note: Event-specific HB uses MAXIMUM in 100s before each event. Global HB uses this baseline for entire study.")
-        
+            if params['use_global_hb']:
+                baseline_text = 'Auto (95th percentile)' if params['preset_baseline'] == 0 else f'{params["preset_baseline"]:.1f}%'
+                st.write(f"**Baseline SpO₂:** {baseline_text}")
         
         # Store in session state
         st.session_state.analysis_params = params
@@ -424,8 +431,8 @@ if edf_file is not None:
     desat_end_sec = params['desat_end_sec']
     artifact_filter = params['artifact_filter']
     desat_threshold = params['desat_threshold']
-    use_global_hb = params['use_global_hb']
     preset_baseline = params['preset_baseline']
+    # Note: Global HB is always calculated (use_global_hb always True)
     if desat_threshold == 4:
         st.warning("⚠️ Using 4% desaturation threshold (non-AASM standard)")
     if artifact_filter != "Off":
@@ -471,7 +478,7 @@ if edf_file is not None:
                         desat_end_sec=preset_params['desat_end_sec'],
                         artifact_filter=preset_params['artifact_filter'],
                         desat_threshold=preset_params['desat_threshold'],
-                        use_global_hb=True,  # Always calculate Global HB
+                        use_global_hb=preset_params['use_global_hb'],
                         preset_baseline=preset_params['preset_baseline'],
                         use_mit_st=st.session_state.use_mit_st
                     )
@@ -741,7 +748,7 @@ if edf_file is not None:
                     desat_end_sec=desat_end_sec,
                     artifact_filter=artifact_filter,
                     desat_threshold=desat_threshold,
-                    use_global_hb=True,  # Always calculate Global HB
+                    use_global_hb=use_global_hb,
                     preset_baseline=preset_baseline,
                     use_mit_st=st.session_state.use_mit_st
                 )
@@ -849,472 +856,6 @@ if edf_file is not None:
             if stage_data:
                 import pandas as pd
                 st.dataframe(pd.DataFrame(stage_data), use_container_width=True)
-        
-        # --------------------------------------------------------------
-        # CLINICAL VALIDATION MODULE
-        # --------------------------------------------------------------
-        st.markdown("---")
-        with st.expander("🏥 Clinical Validation Mode", expanded=False):
-            st.markdown("""
-            Compare automated analysis with manual PSG scoring to validate accuracy.
-            Useful for quality assurance and algorithm validation.
-            """)
-            
-            # Manual entry form
-            st.markdown("#### Enter Manual PSG Results")
-            st.caption("From clinical report or manual scoring")
-            
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                manual_ahi = st.number_input(
-                    "Manual AHI",
-                    min_value=0.0,
-                    max_value=200.0,
-                    value=None,
-                    step=0.1,
-                    help="Apnea-Hypopnea Index from clinical report",
-                    key="manual_ahi_input"
-                )
-                
-                manual_odi = st.number_input(
-                    "Manual ODI",
-                    min_value=0.0,
-                    max_value=200.0,
-                    value=None,
-                    step=0.1,
-                    help="Oxygen Desaturation Index from clinical report",
-                    key="manual_odi_input"
-                )
-            
-            with col2:
-                manual_total_events = st.number_input(
-                    "Total Events",
-                    min_value=0,
-                    value=None,
-                    step=1,
-                    help="Total number of apnea/hypopnea events",
-                    key="manual_events_input"
-                )
-                
-                manual_tst = st.number_input(
-                    "Total Sleep Time (hours)",
-                    min_value=0.0,
-                    max_value=24.0,
-                    value=None,
-                    step=0.1,
-                    help="Total sleep time in hours",
-                    key="manual_tst_input"
-                )
-            
-            with col3:
-                manual_baseline_spo2 = st.number_input(
-                    "Baseline SpO₂ (%)",
-                    min_value=70.0,
-                    max_value=100.0,
-                    value=None,
-                    step=0.1,
-                    help="Baseline oxygen saturation",
-                    key="manual_baseline_input"
-                )
-            
-            # Only show comparison if at least AHI is entered
-            if manual_ahi is not None:
-                st.markdown("---")
-                st.markdown("#### 📊 Comparison Results")
-                
-                # Build comparison data
-                comparison_metrics = []
-                
-                # AHI comparison
-                if manual_ahi is not None:
-                    ahi_diff = results['ahi'] - manual_ahi
-                    ahi_pct = (ahi_diff / manual_ahi * 100) if manual_ahi > 0 else 0
-                    comparison_metrics.append({
-                        'Metric': 'AHI',
-                        'Automated': f"{results['ahi']:.1f}",
-                        'Manual': f"{manual_ahi:.1f}",
-                        'Difference': f"{ahi_diff:+.1f}",
-                        '% Diff': f"{ahi_pct:+.1f}%"
-                    })
-                
-                # ODI comparison
-                if manual_odi is not None:
-                    odi_diff = results['odi'] - manual_odi
-                    odi_pct = (odi_diff / manual_odi * 100) if manual_odi > 0 else 0
-                    comparison_metrics.append({
-                        'Metric': 'ODI',
-                        'Automated': f"{results['odi']:.1f}",
-                        'Manual': f"{manual_odi:.1f}",
-                        'Difference': f"{odi_diff:+.1f}",
-                        '% Diff': f"{odi_pct:+.1f}%"
-                    })
-                
-                # Events comparison
-                if manual_total_events is not None:
-                    events_diff = len(results['events']) - manual_total_events
-                    events_pct = (events_diff / manual_total_events * 100) if manual_total_events > 0 else 0
-                    comparison_metrics.append({
-                        'Metric': 'Total Events',
-                        'Automated': f"{len(results['events'])}",
-                        'Manual': f"{manual_total_events}",
-                        'Difference': f"{events_diff:+.0f}",
-                        '% Diff': f"{events_pct:+.1f}%"
-                    })
-                
-                # TST comparison
-                if manual_tst is not None:
-                    tst_diff = results['duration'] - manual_tst
-                    tst_pct = (tst_diff / manual_tst * 100) if manual_tst > 0 else 0
-                    comparison_metrics.append({
-                        'Metric': 'TST (hours)',
-                        'Automated': f"{results['duration']:.1f}",
-                        'Manual': f"{manual_tst:.1f}",
-                        'Difference': f"{tst_diff:+.1f}",
-                        '% Diff': f"{tst_pct:+.1f}%"
-                    })
-                
-                # Baseline SpO2 comparison
-                if manual_baseline_spo2 is not None and results.get('baseline_used'):
-                    baseline_diff = results['baseline_used'] - manual_baseline_spo2
-                    baseline_pct = (baseline_diff / manual_baseline_spo2 * 100) if manual_baseline_spo2 > 0 else 0
-                    comparison_metrics.append({
-                        'Metric': 'Baseline SpO₂',
-                        'Automated': f"{results['baseline_used']:.1f}",
-                        'Manual': f"{manual_baseline_spo2:.1f}",
-                        'Difference': f"{baseline_diff:+.1f}",
-                        '% Diff': f"{baseline_pct:+.1f}%"
-                    })
-                
-                # Display comparison table
-                df_comparison = pd.DataFrame(comparison_metrics)
-                st.dataframe(df_comparison, use_container_width=True, hide_index=True)
-                
-                # Calculate agreement statistics
-                pct_diffs = []
-                for metric in comparison_metrics:
-                    pct_str = metric['% Diff'].replace('%', '').replace('+', '')
-                    try:
-                        pct_diffs.append(abs(float(pct_str)))
-                    except:
-                        pass
-                
-                if pct_diffs:
-                    mape = np.mean(pct_diffs)
-                    
-                    # Agreement metrics
-                    st.markdown("#### 📈 Agreement Statistics")
-                    
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        st.metric(
-                            "Mean Absolute % Error",
-                            f"{mape:.1f}%",
-                            help="Average percentage difference across all metrics"
-                        )
-                    
-                    with col2:
-                        # Determine agreement level
-                        if mape < 10:
-                            agreement = "Good"
-                            agreement_color = "🟢"
-                        elif mape < 20:
-                            agreement = "Fair"
-                            agreement_color = "🟡"
-                        else:
-                            agreement = "Poor"
-                            agreement_color = "🔴"
-                        
-                        st.metric(
-                            "Overall Agreement",
-                            f"{agreement_color} {agreement}",
-                            help="Good: <10%, Fair: 10-20%, Poor: >20%"
-                        )
-                    
-                    with col3:
-                        # Count metrics within 10%
-                        within_10pct = sum(1 for x in pct_diffs if x < 10)
-                        total_metrics = len(pct_diffs)
-                        
-                        st.metric(
-                            "Metrics within 10%",
-                            f"{within_10pct}/{total_metrics}",
-                            help="Number of metrics with <10% difference"
-                        )
-                    
-                    # Interpretation guide
-                    with st.expander("💡 How to Interpret Results"):
-                        st.markdown("""
-                        **Agreement Levels:**
-                        - 🟢 **Good** (MAPE < 10%): Automated analysis closely matches manual scoring
-                        - 🟡 **Fair** (MAPE 10-20%): Reasonable agreement, some differences expected
-                        - 🔴 **Poor** (MAPE > 20%): Significant differences, review recommended
-                        
-                        **Common Reasons for Differences:**
-                        - Different scoring criteria (AASM versions)
-                        - Event detection sensitivity settings
-                        - Artifact handling approaches
-                        - Baseline calculation methods
-                        - Sleep staging algorithm differences
-                        
-                        **When to Investigate:**
-                        - Any single metric differs by >25%
-                        - Multiple metrics show consistent bias (all over/under)
-                        - TST differs significantly (suggests staging issues)
-                        """)
-                    
-                    # Export validation results
-                    st.markdown("---")
-                    if st.button("📥 Export Validation Report (JSON)", key="export_validation"):
-                        validation_report = {
-                            'file': edf_file.name,
-                            'validation_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                            'metrics_comparison': comparison_metrics,
-                            'agreement_statistics': {
-                                'mape': float(mape),
-                                'agreement_level': agreement,
-                                'metrics_within_10pct': f"{within_10pct}/{total_metrics}"
-                            }
-                        }
-                        
-                        import json
-                        json_str = json.dumps(validation_report, indent=2)
-                        
-                        st.download_button(
-                            label="⬇️ Download Validation Report",
-                            data=json_str,
-                            file_name=f"validation_{edf_file.name.replace('.edf', '')}_{datetime.now().strftime('%Y%m%d')}.json",
-                            mime="application/json",
-                            key="download_validation_json"
-                        )
-        
-        # --------------------------------------------------------------
-        # FEATURE #5: INTERACTIVE DESATURATION PLOT (Plotly)
-        # --------------------------------------------------------------
-        st.markdown("---")
-        st.subheader("📈 Interactive SpO₂ Analysis")
-        
-        try:
-            import plotly.graph_objects as go
-            from plotly.subplots import make_subplots
-            
-            # Get data from analyzer
-            spo2_data = analyzer.df_spo2.copy()
-            events = results.get('events', [])
-            stages = analyzer.stages
-            
-            # Define stage colors (subtle backgrounds)
-            STAGE_COLORS = {
-                'W': 'rgba(200, 200, 200, 0.15)',     # Light gray
-                'N1': 'rgba(135, 206, 235, 0.15)',    # Sky blue
-                'N2': 'rgba(70, 130, 180, 0.15)',     # Steel blue
-                'N3': 'rgba(25, 25, 112, 0.15)',      # Midnight blue
-                'REM': 'rgba(147, 112, 219, 0.15)'    # Medium purple
-            }
-            
-            # Performance optimization: downsample if >20k points (>5.5 hours)
-            if len(spo2_data) > 20000:
-                downsample_factor = max(1, len(spo2_data) // 15000)
-                spo2_data_plot = spo2_data.iloc[::downsample_factor].copy()
-                st.caption(f"ℹ️ Display downsampled to {len(spo2_data_plot):,} points for smooth rendering (original: {len(spo2_data):,})")
-            else:
-                spo2_data_plot = spo2_data
-            
-            # Create figure with secondary y-axis for airflow
-            fig = make_subplots(specs=[[{"secondary_y": True}]])
-            
-            # Add sleep stage background shading
-            if stages is not None and len(stages) > 0:
-                epoch_duration = 30  # seconds per epoch
-                current_stage = stages[0]
-                stage_start = 0
-                
-                for i in range(1, len(stages) + 1):
-                    # Check if stage changed or reached end
-                    if i == len(stages) or stages[i] != current_stage:
-                        stage_end = i * epoch_duration
-                        
-                        # Add colored rectangle for this stage
-                        if current_stage in STAGE_COLORS:
-                            fig.add_vrect(
-                                x0=stage_start / 3600,
-                                x1=stage_end / 3600,
-                                fillcolor=STAGE_COLORS[current_stage],
-                                layer="below",
-                                line_width=0,
-                                annotation_text=current_stage if (stage_end - stage_start) / 3600 > 0.3 else "",
-                                annotation_position="top left",
-                                annotation_font_size=8,
-                                annotation_font_color="gray"
-                            )
-                        
-                        # Update for next stage
-                        if i < len(stages):
-                            current_stage = stages[i]
-                            stage_start = stage_end
-            
-            # Add baseline reference line (if available)
-            if results.get('baseline_used'):
-                fig.add_hline(
-                    y=results['baseline_used'],
-                    line_dash="dash",
-                    line_color="green",
-                    line_width=1,
-                    opacity=0.5,
-                    annotation_text=f"Baseline: {results['baseline_used']:.1f}%",
-                    annotation_position="right"
-                )
-            
-            # Add SpO₂ trace (primary y-axis)
-            fig.add_trace(go.Scattergl(
-                x=spo2_data_plot['time'] / 3600,  # Convert to hours
-                y=spo2_data_plot['spo2'],
-                mode='lines',
-                name='SpO₂',
-                line=dict(color='#1f77b4', width=1.5),
-                hovertemplate='<b>Time:</b> %{x:.2f}h<br>' +
-                              '<b>SpO₂:</b> %{y:.1f}%<br>' +
-                              '<extra></extra>'
-            ), secondary_y=False)
-            
-            # Add airflow trace (secondary y-axis) if available
-            if analyzer.df_flow is not None and len(analyzer.df_flow) > 0:
-                flow_data = analyzer.df_flow.copy()
-                
-                # Downsample flow data to match SpO2 for performance
-                if len(flow_data) > 20000:
-                    downsample_factor = max(1, len(flow_data) // 15000)
-                    flow_data_plot = flow_data.iloc[::downsample_factor].copy()
-                else:
-                    flow_data_plot = flow_data
-                
-                # Normalize flow to 0-1 range for visualization
-                flow_normalized = flow_data_plot['flow'].values
-                flow_min = np.percentile(flow_normalized, 5)
-                flow_max = np.percentile(flow_normalized, 95)
-                
-                if flow_max != flow_min:
-                    flow_normalized = (flow_normalized - flow_min) / (flow_max - flow_min)
-                    # Center around 0.5 for better visualization
-                    flow_normalized = flow_normalized - 0.5
-                else:
-                    flow_normalized = np.zeros_like(flow_normalized)
-                
-                fig.add_trace(go.Scattergl(
-                    x=flow_data_plot['time'] / 3600,
-                    y=flow_normalized,
-                    mode='lines',
-                    name='Airflow',
-                    line=dict(color='#9467bd', width=1.0, dash='dot'),
-                    opacity=0.7,
-                    hovertemplate='<b>Time:</b> %{x:.2f}h<br>' +
-                                  '<b>Airflow:</b> %{y:.2f}<br>' +
-                                  '<extra></extra>'
-                ), secondary_y=True)
-            
-            # Add event highlighting (red rectangles)
-            if events and len(events) > 0:
-                # Group nearby events to reduce number of rectangles
-                event_groups = []
-                current_group = {'start': events[0]['start'], 'end': events[0]['end']}
-                
-                for event in events[1:]:
-                    # If event starts within 30s of current group end, extend the group
-                    if event['start'] - current_group['end'] < 30:
-                        current_group['end'] = max(current_group['end'], event['end'])
-                    else:
-                        event_groups.append(current_group)
-                        current_group = {'start': event['start'], 'end': event['end']}
-                
-                event_groups.append(current_group)
-                
-                # Add rectangles for event groups
-                for group in event_groups:
-                    fig.add_vrect(
-                        x0=group['start'] / 3600,
-                        x1=group['end'] / 3600,
-                        fillcolor="rgba(255, 0, 0, 0.2)",
-                        layer="above",
-                        line_width=0
-                    )
-                
-                # Add invisible trace for legend
-                fig.add_trace(go.Scatter(
-                    x=[None],
-                    y=[None],
-                    mode='markers',
-                    marker=dict(size=10, color='rgba(255, 0, 0, 0.3)'),
-                    showlegend=True,
-                    name=f'Events (n={len(events)})'
-                ))
-            
-            # Configure layout with dual y-axes
-            fig.update_layout(
-                title='SpO₂, Airflow, and Respiratory Events Over Time',
-                xaxis_title='Time (hours)',
-                height=500,
-                hovermode='x unified',
-                showlegend=True,
-                legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=1.02,
-                    xanchor="right",
-                    x=1
-                ),
-                xaxis=dict(
-                    rangeslider=dict(visible=True, thickness=0.05),
-                    type='linear'
-                )
-            )
-            
-            # Set y-axes titles and ranges
-            fig.update_yaxes(
-                title_text="SpO₂ (%)",
-                range=[max(70, spo2_data_plot['spo2'].min() - 5), 
-                       min(100, spo2_data_plot['spo2'].max() + 2)],
-                secondary_y=False
-            )
-            
-            fig.update_yaxes(
-                title_text="Airflow (normalized)",
-                range=[-1, 1],
-                secondary_y=True,
-                showgrid=False  # Don't show gridlines for airflow to reduce clutter
-            )
-            
-            # Display interactive plot
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Add helpful tips
-            with st.expander("💡 How to use this interactive plot"):
-                st.markdown("""
-                **Interactive Features:**
-                - 🔍 **Zoom:** Click and drag to select a region, or use the range slider below
-                - 🖱️ **Pan:** Hold Shift and drag to pan across the timeline
-                - 🔄 **Reset:** Double-click to reset zoom
-                - 👆 **Hover:** Move your mouse over the plot to see detailed values
-                - 👁️ **Legend:** Click legend items to show/hide data layers
-                
-                **Visual Elements:**
-                - **Blue solid line (left axis):** SpO₂ saturation over time
-                - **Purple dotted line (right axis):** Airflow signal (normalized, if available)
-                - **Red shading:** Respiratory events (apnea/hypopnea)
-                - **Background colors:** Sleep stages (gray=Wake, light blue=N1, medium blue=N2, dark blue=N3, purple=REM)
-                - **Green dashed line:** Baseline SpO₂ reference
-                
-                **Clinical Interpretation:**
-                - **Apnea events:** Flat airflow (0) with delayed SpO₂ drop
-                - **Hypopnea events:** Reduced airflow (partial reduction) with SpO₂ drop
-                - **Normal breathing:** Rhythmic airflow oscillations, stable SpO₂
-                - **Event recovery:** Airflow resumes → SpO₂ recovers (often with overshoot)
-                """)
-        
-        except ImportError:
-            st.warning("⚠️ Plotly not installed. Install with: `pip install plotly`")
-        except Exception as e:
-            st.error(f"⚠️ Error generating interactive plot: {e}")
         
         # Report generation
         st.markdown("---")
@@ -1546,8 +1087,12 @@ if batch_files:
                 index=0,
                 key="batch_desat"
             )
-        
-        st.caption("ℹ️ Global HB is always calculated for all files")
+            batch_use_global_hb = st.checkbox(
+                "Calculate Global HB",
+                value=True,
+                key="batch_global_hb",
+                help="Calculate global hypoxic burden for each file"
+            )
     
     # Initialize batch session state
     for key in ['batch_running', 'batch_paused', 'batch_progress', 'batch_results', 'batch_files_processed']:
@@ -1644,7 +1189,7 @@ if batch_files:
                     desat_end_sec=120,
                     artifact_filter="Off",
                     desat_threshold=desat_thresh_val,
-                    use_global_hb=True,  # Always calculate Global HB
+                    use_global_hb=batch_use_global_hb,
                     preset_baseline=0.0,
                     use_mit_st=False
                 )
