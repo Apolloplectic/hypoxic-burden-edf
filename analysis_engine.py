@@ -769,19 +769,19 @@ class PSGAnalyzer:
     
     def calculate_bootstrap_ci(self, n_boot=1000, pre_event_sec=100,
                                desat_start_sec=0, desat_end_sec=90,
-                               artifact_filter='Off'):
+                               artifact_filter='Off', stratify_by_stage=True):
         """
         Calculate 95% confidence interval using bootstrap
         
         Uses Azarbarzin methodology:
         - Baseline from 100s before event START
-        - 98th percentile baseline
+        - MAXIMUM baseline value
         - Desaturation window from event START to 90s after END
         
         Parameters:
         -----------
         n_boot : int
-            Number of bootstrap iterations
+            Number of bootstrap iterations (default: 1000)
         pre_event_sec : int
             Seconds before event START for baseline (default: 100)
         desat_start_sec : int
@@ -790,26 +790,77 @@ class PSGAnalyzer:
             Seconds after event END (default: 90)
         artifact_filter : str
             Artifact filter setting
+        stratify_by_stage : bool
+            If True, maintain stage distribution in bootstrap samples
+            (more accurate CI, especially for small samples)
         
         Returns:
         --------
         tuple
             (ci_low, ci_high)
+        
+        Notes:
+        ------
+        Assumptions:
+        - Events within stages are independent
+        - TST is fixed (appropriate for single-recording analysis)
+        - Minimum 20 events recommended for reliable CI
+        
+        Stratification:
+        - Preserves sleep stage distribution across bootstrap samples
+        - Reduces variance from stage composition changes
+        - Recommended for most analyses
         """
         if self.events_df is None or len(self.events_df) == 0:
             return (0.0, 0.0)
+        
+        n_events = len(self.events_df)
+        
+        # Warn for small samples
+        if n_events < 20:
+            import warnings
+            warnings.warn(
+                f"Only {n_events} events detected. Bootstrap 95% CI may be "
+                f"unreliable with fewer than 20 events. Interpret with caution. "
+                f"Consider wider confidence intervals in practice.",
+                UserWarning
+            )
         
         hb_values = []
         total_hours = self.raw.times[-1] / 3600
         
         for _ in range(n_boot):
-            # Bootstrap sample events (with replacement)
-            boot_events = self.events_df.sample(n=len(self.events_df), replace=True)
+            # Bootstrap sample events
+            if stratify_by_stage and self.stages is not None:
+                # Stage-stratified bootstrap
+                boot_events_list = []
+                
+                # Sample within each stage to preserve distribution
+                for stage in ['W', 'N1', 'N2', 'N3', 'REM']:
+                    stage_events = self.events_df[self.events_df['stage'] == stage]
+                    
+                    if len(stage_events) > 0:
+                        # Sample with replacement within this stage
+                        boot_stage = stage_events.sample(
+                            n=len(stage_events), 
+                            replace=True
+                        )
+                        boot_events_list.append(boot_stage)
+                
+                # Combine all stages
+                if boot_events_list:
+                    boot_events = pd.concat(boot_events_list, ignore_index=True)
+                else:
+                    # Fallback to unstratified if no stage info
+                    boot_events = self.events_df.sample(n=n_events, replace=True)
+            else:
+                # Simple (unstratified) bootstrap
+                boot_events = self.events_df.sample(n=n_events, replace=True)
             
             area_total = 0.0
             
             for _, ev in boot_events.iterrows():
-                start_t = ev['start']  # Use START instead of END
+                start_t = ev['start']
                 end_t = ev['end']
                 
                 # Get baseline (100s before event START, MAXIMUM value)
@@ -821,7 +872,7 @@ class PSGAnalyzer:
                 if len(base_df) == 0:
                     continue
                 
-                baseline = base_df['spo2'].max()  # Use max() per paper
+                baseline = base_df['spo2'].max()
                 
                 # Get desaturation window (from START to END+90s)
                 win_df = self.df_spo2[
@@ -846,7 +897,7 @@ class PSGAnalyzer:
             hb_boot = (area_total / 60) / total_hours
             hb_values.append(hb_boot)
         
-        # Calculate 95% CI
+        # Calculate 95% CI using percentile method
         ci_low, ci_high = np.percentile(hb_values, [2.5, 97.5])
         
         return (ci_low, ci_high)
@@ -902,7 +953,12 @@ class PSGAnalyzer:
         # Step 6: Calculate bootstrap CI
         if len(self.events_df) > 0:
             ci_low, ci_high = self.calculate_bootstrap_ci(
-                1000, pre_event_sec, desat_start_sec, desat_end_sec, artifact_filter
+                n_boot=1000,
+                pre_event_sec=pre_event_sec,
+                desat_start_sec=desat_start_sec,
+                desat_end_sec=desat_end_sec,
+                artifact_filter=artifact_filter,
+                stratify_by_stage=True  # Use stage-stratified bootstrap for more accurate CI
             )
         else:
             ci_low, ci_high = 0.0, 0.0
