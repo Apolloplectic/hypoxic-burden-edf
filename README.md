@@ -2,7 +2,7 @@
 
 ## 🎯 Overview
 
-This is a **completely refactored** version of your Hypoxic Burden Calculator that fixes all 5 major issues you identified, plus adds significant improvements to code organization and maintainability.
+This is a **completely refactored** version of the Hypoxic Burden Calculator that adds significant improvements to code organization and maintainability.
 
 ---
 
