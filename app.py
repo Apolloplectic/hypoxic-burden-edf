@@ -48,13 +48,51 @@ Based on:
 # --------------------------------------------------------------
 # FILE UPLOAD SECTION
 # --------------------------------------------------------------
-st.markdown("### 📁 Single File Analysis")
-edf_file = st.file_uploader(
-    "Upload PSG EDF file",
-    type=["edf"],
-    help="⚠️ Online version limited to 200 MB. For larger files (up to 2 GB), run locally (see instructions below).",
-    key="single_file_upload"
+st.markdown("### 📁 Upload Mode")
+
+# Mode selection
+analysis_mode = st.radio(
+    "Select Analysis Mode:",
+    ["Single File Analysis", "Treatment Comparison (Before/After)"],
+    help="Compare pre-treatment vs post-treatment PSG studies"
 )
+
+if analysis_mode == "Single File Analysis":
+    st.markdown("#### Upload PSG EDF file")
+    edf_file = st.file_uploader(
+        "Upload PSG EDF file",
+        type=["edf"],
+        help="⚠️ Online version limited to 200 MB. For larger files (up to 2 GB), run locally (see instructions below).",
+        key="single_file_upload"
+    )
+    pre_treatment_file = None
+    post_treatment_file = None
+
+else:  # Treatment Comparison mode
+    st.markdown("#### Upload Before & After PSG Files")
+    st.info("📊 Compare the same patient before and after treatment (CPAP, Inspire, surgery, etc.)")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**Pre-Treatment (Baseline)**")
+        pre_treatment_file = st.file_uploader(
+            "Upload baseline PSG",
+            type=["edf"],
+            help="PSG before any treatment",
+            key="pre_treatment_upload"
+        )
+    
+    with col2:
+        st.markdown("**Post-Treatment**")
+        post_treatment_file = st.file_uploader(
+            "Upload post-treatment PSG",
+            type=["edf"],
+            help="PSG after treatment (CPAP, Inspire, etc.)",
+            key="post_treatment_upload"
+        )
+    
+    edf_file = None  # Not used in comparison mode
 
 # --------------------------------------------------------------
 # LOCAL RUN INSTRUCTIONS
@@ -1038,6 +1076,276 @@ if edf_file is not None:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
             st.rerun()
+
+# =============================================
+# TREATMENT COMPARISON MODE
+# =============================================
+elif analysis_mode == "Treatment Comparison (Before/After)" and pre_treatment_file is not None and post_treatment_file is not None:
+    st.markdown("---")
+    st.markdown("## 🔬 Treatment Comparison Analysis")
+    
+    # Load both files
+    with st.spinner("📂 Loading pre-treatment PSG..."):
+        raw_pre, temp_path_pre = load_edf_file(pre_treatment_file)
+    
+    with st.spinner("📂 Loading post-treatment PSG..."):
+        raw_post, temp_path_post = load_edf_file(post_treatment_file)
+    
+    if raw_pre is None or raw_post is None:
+        st.error("❌ Failed to load one or both EDF files. Please check the file formats.")
+        st.stop()
+    
+    # Initialize analyzers
+    analyzer_pre = PSGAnalyzer(raw_pre, temp_path_pre)
+    analyzer_post = PSGAnalyzer(raw_post, temp_path_post)
+    
+    # Validate both files
+    st.markdown("### 🔍 Data Quality Check")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### Pre-Treatment")
+        validator_pre = PSGValidator(raw_pre, analyzer_pre)
+        validation_pre = validator_pre.validate_all()
+        validator_pre.display_results(show_info=False)
+    
+    with col2:
+        st.markdown("#### Post-Treatment")
+        validator_post = PSGValidator(raw_post, analyzer_post)
+        validation_post = validator_post.validate_all()
+        validator_post.display_results(show_info=False)
+    
+    if not validation_pre['valid'] or not validation_post['valid']:
+        st.error("**Cannot proceed with analysis due to critical errors above.**")
+        st.stop()
+    
+    # Select preset for analysis
+    st.markdown("---")
+    st.markdown("### ⚙️ Analysis Settings")
+    
+    comparison_preset = st.selectbox(
+        "Analysis Preset (applied to both files)",
+        list(PRESETS.keys()),
+        index=0,
+        help="Use same preset for fair comparison"
+    )
+    
+    params = PRESETS[comparison_preset].copy()
+    st.info(f"ℹ️ **{comparison_preset}:** {params['description']}")
+    
+    # Run analysis button
+    if st.button("🚀 Run Comparison Analysis", type="primary", use_container_width=True):
+        
+        # Analyze pre-treatment
+        with st.spinner("🔬 Analyzing pre-treatment PSG..."):
+            results_pre = analyzer_pre.run_full_analysis(
+                pre_event_sec=params['pre_event_sec'],
+                desat_start_sec=params['desat_start_sec'],
+                desat_end_sec=params['desat_end_sec'],
+                artifact_filter=params['artifact_filter'],
+                desat_threshold=params['desat_threshold'],
+                use_global_hb=True,
+                preset_baseline=params['preset_baseline'],
+                use_mit_st=st.session_state.use_mit_st
+            )
+        
+        # Analyze post-treatment
+        with st.spinner("🔬 Analyzing post-treatment PSG..."):
+            results_post = analyzer_post.run_full_analysis(
+                pre_event_sec=params['pre_event_sec'],
+                desat_start_sec=params['desat_start_sec'],
+                desat_end_sec=params['desat_end_sec'],
+                artifact_filter=params['artifact_filter'],
+                desat_threshold=params['desat_threshold'],
+                use_global_hb=True,
+                preset_baseline=params['preset_baseline'],
+                use_mit_st=st.session_state.use_mit_st
+            )
+        
+        # Display comparison results
+        st.markdown("---")
+        st.markdown("## 📊 Treatment Effect Summary")
+        
+        # Overall metrics comparison
+        st.markdown("### Primary Outcomes")
+        
+        comparison_data = {
+            'Metric': ['AHI (events/h)', 'ODI (events/h)', 'Hypoxic Burden (%·min/h)', 'Global HB (%·min/h)'],
+            'Pre-Treatment': [
+                f"{results_pre['ahi']:.1f}",
+                f"{results_pre['odi']:.1f}",
+                f"{results_pre['total_hb']:.1f}",
+                f"{results_pre.get('global_hb', 0):.1f}"
+            ],
+            'Post-Treatment': [
+                f"{results_post['ahi']:.1f}",
+                f"{results_post['odi']:.1f}",
+                f"{results_post['total_hb']:.1f}",
+                f"{results_post.get('global_hb', 0):.1f}"
+            ],
+            'Absolute Change': [
+                f"{results_post['ahi'] - results_pre['ahi']:.1f}",
+                f"{results_post['odi'] - results_pre['odi']:.1f}",
+                f"{results_post['total_hb'] - results_pre['total_hb']:.1f}",
+                f"{results_post.get('global_hb', 0) - results_pre.get('global_hb', 0):.1f}"
+            ],
+            '% Improvement': []
+        }
+        
+        # Calculate % improvement
+        for i, pre_val in enumerate([results_pre['ahi'], results_pre['odi'], results_pre['total_hb'], results_pre.get('global_hb', 0)]):
+            post_val = [results_post['ahi'], results_post['odi'], results_post['total_hb'], results_post.get('global_hb', 0)][i]
+            if pre_val > 0:
+                improvement = ((pre_val - post_val) / pre_val) * 100
+                comparison_data['% Improvement'].append(f"{improvement:.1f}%")
+            else:
+                comparison_data['% Improvement'].append("N/A")
+        
+        df_comparison = pd.DataFrame(comparison_data)
+        st.dataframe(df_comparison, use_container_width=True, hide_index=True)
+        
+        # Treatment efficacy interpretation
+        ahi_improvement = ((results_pre['ahi'] - results_post['ahi']) / results_pre['ahi'] * 100) if results_pre['ahi'] > 0 else 0
+        hb_improvement = ((results_pre['total_hb'] - results_post['total_hb']) / results_pre['total_hb'] * 100) if results_pre['total_hb'] > 0 else 0
+        
+        st.markdown("### 🎯 Treatment Efficacy")
+        
+        if ahi_improvement >= 50 and hb_improvement >= 50:
+            st.success(f"✅ **Excellent Response**: AHI improved {ahi_improvement:.1f}%, HB improved {hb_improvement:.1f}%")
+        elif ahi_improvement >= 30 and hb_improvement >= 30:
+            st.info(f"✓ **Good Response**: AHI improved {ahi_improvement:.1f}%, HB improved {hb_improvement:.1f}%")
+        elif ahi_improvement >= 10 and hb_improvement >= 10:
+            st.warning(f"⚠️ **Partial Response**: AHI improved {ahi_improvement:.1f}%, HB improved {hb_improvement:.1f}%")
+        else:
+            st.error(f"❌ **Poor Response**: AHI improved {ahi_improvement:.1f}%, HB improved {hb_improvement:.1f}%")
+        
+        # Stage-by-stage comparison
+        st.markdown("---")
+        st.markdown("### 📊 Stage-Specific Comparison")
+        
+        # Build stage comparison table
+        stage_comparison_rows = []
+        for stage in ['REM', 'N3', 'N2', 'N1', 'W']:
+            if stage in results_pre['stage_hb'] and stage in results_post['stage_hb']:
+                pre_stage = results_pre['stage_hb'][stage]
+                post_stage = results_post['stage_hb'][stage]
+                
+                # Calculate improvements
+                ahi_change = post_stage['AHI'] - pre_stage['AHI']
+                odi_change = post_stage['ODI'] - pre_stage['ODI']
+                hb_change = post_stage['HB'] - pre_stage['HB']
+                
+                hb_improvement_pct = ((pre_stage['HB'] - post_stage['HB']) / pre_stage['HB'] * 100) if pre_stage['HB'] > 0 else 0
+                
+                stage_comparison_rows.append({
+                    'Stage': stage,
+                    'Pre-AHI': f"{pre_stage['AHI']:.1f}",
+                    'Post-AHI': f"{post_stage['AHI']:.1f}",
+                    'AHI Δ': f"{ahi_change:.1f}",
+                    'Pre-HB': f"{pre_stage['HB']:.1f}",
+                    'Post-HB': f"{post_stage['HB']:.1f}",
+                    'HB Improvement': f"{hb_improvement_pct:.1f}%"
+                })
+        
+        if stage_comparison_rows:
+            df_stage_comparison = pd.DataFrame(stage_comparison_rows)
+            st.dataframe(df_stage_comparison, use_container_width=True, hide_index=True)
+        
+        # Visual comparison charts
+        st.markdown("---")
+        st.markdown("### 📈 Visual Comparison")
+        
+        # Create comparison bar chart
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+        
+        # AHI/ODI comparison
+        metrics = ['AHI', 'ODI']
+        pre_values = [results_pre['ahi'], results_pre['odi']]
+        post_values = [results_post['ahi'], results_post['odi']]
+        
+        x = np.arange(len(metrics))
+        width = 0.35
+        
+        ax1.bar(x - width/2, pre_values, width, label='Pre-Treatment', color='#e74c3c', alpha=0.8)
+        ax1.bar(x + width/2, post_values, width, label='Post-Treatment', color='#27ae60', alpha=0.8)
+        ax1.set_ylabel('Events per hour')
+        ax1.set_title('AHI & ODI Comparison')
+        ax1.set_xticks(x)
+        ax1.set_xticklabels(metrics)
+        ax1.legend()
+        ax1.grid(axis='y', alpha=0.3)
+        
+        # HB comparison
+        hb_metrics = ['Event-Specific HB', 'Global HB']
+        hb_pre_values = [results_pre['total_hb'], results_pre.get('global_hb', 0)]
+        hb_post_values = [results_post['total_hb'], results_post.get('global_hb', 0)]
+        
+        x2 = np.arange(len(hb_metrics))
+        
+        ax2.bar(x2 - width/2, hb_pre_values, width, label='Pre-Treatment', color='#e74c3c', alpha=0.8)
+        ax2.bar(x2 + width/2, hb_post_values, width, label='Post-Treatment', color='#27ae60', alpha=0.8)
+        ax2.set_ylabel('(%·min)/h')
+        ax2.set_title('Hypoxic Burden Comparison')
+        ax2.set_xticks(x2)
+        ax2.set_xticklabels(hb_metrics, rotation=15, ha='right')
+        ax2.legend()
+        ax2.grid(axis='y', alpha=0.3)
+        
+        plt.tight_layout()
+        st.pyplot(fig)
+        
+        # Download comparison report
+        st.markdown("---")
+        st.markdown("### 📥 Export Comparison Report")
+        
+        if st.button("📄 Generate PDF Comparison Report"):
+            # Create PDF with both analyses
+            pdf_gen = PDFReportGenerator()
+            
+            # Generate individual reports
+            buffer_pre = pdf_gen.generate_report(
+                filename=pre_treatment_file.name,
+                results=results_pre,
+                params=params,
+                analyzer=analyzer_pre
+            )
+            
+            buffer_post = pdf_gen.generate_report(
+                filename=post_treatment_file.name,
+                results=results_post,
+                params=params,
+                analyzer=analyzer_post
+            )
+            
+            # Create comparison summary page (simplified for now)
+            comparison_summary = f"""
+            TREATMENT COMPARISON SUMMARY
+            ============================
+            
+            Pre-Treatment File: {pre_treatment_file.name}
+            Post-Treatment File: {post_treatment_file.name}
+            
+            PRIMARY OUTCOMES:
+            - AHI: {results_pre['ahi']:.1f} → {results_post['ahi']:.1f} ({ahi_improvement:.1f}% improvement)
+            - Hypoxic Burden: {results_pre['total_hb']:.1f} → {results_post['total_hb']:.1f} ({hb_improvement:.1f}% improvement)
+            - Global HB: {results_pre.get('global_hb', 0):.1f} → {results_post.get('global_hb', 0):.1f}
+            """
+            
+            st.download_button(
+                label="⬇️ Download Pre-Treatment Report",
+                data=buffer_pre,
+                file_name=f"pre_treatment_{pre_treatment_file.name.replace('.edf', '')}_report.pdf",
+                mime="application/pdf"
+            )
+            
+            st.download_button(
+                label="⬇️ Download Post-Treatment Report",
+                data=buffer_post,
+                file_name=f"post_treatment_{post_treatment_file.name.replace('.edf', '')}_report.pdf",
+                mime="application/pdf"
+            )
+            
+            st.text_area("Comparison Summary (copy/paste)", comparison_summary, height=200)
 
 # =============================================
 # BATCH ANALYSIS MODE
