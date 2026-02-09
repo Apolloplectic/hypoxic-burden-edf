@@ -110,17 +110,17 @@ display_analysis_history()
 PRESETS = {
     "Azarbarzin 2019 (Default)": {
         'pre_event_sec': 100,
-        'desat_start_sec': 60,
-        'desat_end_sec': 120,
+        'desat_start_sec': 0,      # Changed: Start AT event start (not 60s before)
+        'desat_end_sec': 90,       # Changed: 90s after end (not 120s)
         'desat_threshold': 3,
         'artifact_filter': 'Off',
         'use_global_hb': True,
         'preset_baseline': 0.0,
-        'description': "Validated parameters from the original Azarbarzin et al. study (EHJ 2019)"
+        'description': "Exact parameters from Azarbarzin et al. EHJ 2019: Baseline=MAXIMUM SpO2 in 100s before event START, desaturation window from event START to 90s after END"
     },
     "AASM 2023 Standard": {
         'pre_event_sec': 120,
-        'desat_start_sec': 60,
+        'desat_start_sec': 0,      # Changed for consistency
         'desat_end_sec': 90,
         'desat_threshold': 3,
         'artifact_filter': 'Mild (10%/s)',
@@ -130,8 +130,8 @@ PRESETS = {
     },
     "Conservative (High Specificity)": {
         'pre_event_sec': 100,
-        'desat_start_sec': 60,
-        'desat_end_sec': 120,
+        'desat_start_sec': 0,      # Changed for consistency
+        'desat_end_sec': 90,
         'desat_threshold': 4,
         'artifact_filter': 'Strict (5%/s)',
         'use_global_hb': False,
@@ -140,18 +140,18 @@ PRESETS = {
     },
     "Aggressive (High Sensitivity)": {
         'pre_event_sec': 80,
-        'desat_start_sec': 45,
-        'desat_end_sec': 150,
+        'desat_start_sec': 0,
+        'desat_end_sec': 150,     # Longer window to catch delayed desaturations
         'desat_threshold': 3,
         'artifact_filter': 'Off',
         'use_global_hb': True,
         'preset_baseline': 0.0,
-        'description': "Maximizes event detection - catches all possible desaturations"
+        'description': "Maximizes event detection - catches all possible desaturations with extended window"
     },
     "Custom": {
         'pre_event_sec': 100,
-        'desat_start_sec': 60,
-        'desat_end_sec': 120,
+        'desat_start_sec': 0,
+        'desat_end_sec': 90,
         'desat_threshold': 3,
         'artifact_filter': 'Off',
         'use_global_hb': True,
@@ -318,30 +318,30 @@ if edf_file is not None:
             
             with col1:
                 params['pre_event_sec'] = st.slider(
-                    "Pre-event baseline window (s)",
+                    "Pre-event baseline window (s before START)",
                     min_value=30,
                     max_value=180,
                     value=params['pre_event_sec'],
                     step=1,
-                    help="Time before event to calculate baseline SpO₂"
+                    help="Time before EVENT START to measure baseline SpO₂ (Azarbarzin: 100s, uses MAXIMUM value)"
                 )
                 params['desat_start_sec'] = st.slider(
-                    "Desaturation start (s before event end)",
-                    min_value=15,
-                    max_value=120,
+                    "Desaturation start offset (s from event START)",
+                    min_value=0,
+                    max_value=30,
                     value=params['desat_start_sec'],
                     step=1,
-                    help="Start of desaturation window"
+                    help="Offset from event START (0 = start at event onset, per Azarbarzin)"
                 )
             
             with col2:
                 params['desat_end_sec'] = st.slider(
-                    "Desaturation end (s after event end)",
+                    "Desaturation end (s after event END)",
                     min_value=60,
                     max_value=240,
                     value=params['desat_end_sec'],
                     step=1,
-                    help="End of desaturation window (recovery time)"
+                    help="Time after event END to search for nadir (Azarbarzin: 90s)"
                 )
                 params['artifact_filter'] = st.selectbox(
                     "SpO₂ artifact filter",
@@ -396,8 +396,8 @@ if edf_file is not None:
             col1, col2 = st.columns(2)
             
             with col1:
-                st.write(f"**Pre-event baseline:** {params['pre_event_sec']}s")
-                st.write(f"**Desat start:** {params['desat_start_sec']}s before end")
+                st.write(f"**Pre-event baseline:** {params['pre_event_sec']}s before START")
+                st.write(f"**Desat start offset:** {params['desat_start_sec']}s from START")
                 st.write(f"**Desat end:** {params['desat_end_sec']}s after end")
             
             with col2:
