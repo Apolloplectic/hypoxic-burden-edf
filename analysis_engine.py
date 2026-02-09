@@ -643,27 +643,50 @@ class PSGAnalyzer:
                            desat_end_sec, artifact_filter):
         """
         Calculate HB for events in a specific stage
+        
+        Azarbarzin et al. (2019) methodology:
+        - Baseline: 98th percentile of SpO2 in 100s BEFORE event START
+        - Desaturation window: FROM event START to 90s AFTER event END
+        
+        Parameters:
+        -----------
+        events : list
+            Events to analyze
+        pre_event_sec : int
+            Seconds before event START to measure baseline (default: 100)
+        desat_start_sec : int
+            Offset from event START (should be 0 for Azarbarzin method)
+        desat_end_sec : int
+            Seconds after event END to search for nadir (default: 90)
+        artifact_filter : str
+            Artifact filter setting
         """
         area_total = 0.0
         proof_events = []
         
         for ev in events:
-            end_t = ev['end']
+            start_t = ev['start']  # Event START time (key change!)
+            end_t = ev['end']      # Event END time
             
-            # Get baseline from pre-event window
+            # Get baseline from pre-event window (BEFORE event starts)
+            # Azarbarzin: 100 seconds before event START
             base_df = self.df_spo2[
-                (self.df_spo2['time'] >= end_t - pre_event_sec) &
-                (self.df_spo2['time'] < end_t)
+                (self.df_spo2['time'] >= start_t - pre_event_sec) &
+                (self.df_spo2['time'] < start_t)
             ]
             
             if len(base_df) == 0:
                 continue
             
-            baseline = base_df['spo2'].max()
+            # Use 98th percentile for baseline (per Azarbarzin paper)
+            # This is more robust than max() and filters out transient spikes
+            baseline = np.percentile(base_df['spo2'], 98)
             
             # Get desaturation window
+            # Azarbarzin: FROM event start TO 90s after event end
+            # desat_start_sec allows offset from START (0 for exact Azarbarzin)
             win_df = self.df_spo2[
-                (self.df_spo2['time'] >= end_t - desat_start_sec) &
+                (self.df_spo2['time'] >= start_t + desat_start_sec) &
                 (self.df_spo2['time'] <= end_t + desat_end_sec)
             ].copy()
             
@@ -675,7 +698,7 @@ class PSGAnalyzer:
                 artifact_indices = self.df_spo2[self.df_spo2['artifact']].index
                 win_df = win_df[~win_df.index.isin(artifact_indices)]
             
-            # Calculate area below baseline
+            # Calculate area below baseline (trapezoidal integration)
             depth = np.maximum(baseline - win_df['spo2'].values, 0)
             area = trapz(depth, win_df['time'].values)
             
@@ -683,6 +706,7 @@ class PSGAnalyzer:
             
             # Store for proof plots
             proof_events.append({
+                'start_t': start_t,  # Also store start time
                 'end_t': end_t,
                 'baseline': baseline,
                 'win_df': win_df,
@@ -743,17 +767,26 @@ class PSGAnalyzer:
         }
     
     def calculate_bootstrap_ci(self, n_boot=1000, pre_event_sec=100,
-                               desat_start_sec=60, desat_end_sec=120,
+                               desat_start_sec=0, desat_end_sec=90,
                                artifact_filter='Off'):
         """
         Calculate 95% confidence interval using bootstrap
+        
+        Uses Azarbarzin methodology:
+        - Baseline from 100s before event START
+        - 98th percentile baseline
+        - Desaturation window from event START to 90s after END
         
         Parameters:
         -----------
         n_boot : int
             Number of bootstrap iterations
-        pre_event_sec, desat_start_sec, desat_end_sec : int
-            HB calculation parameters
+        pre_event_sec : int
+            Seconds before event START for baseline (default: 100)
+        desat_start_sec : int
+            Offset from event START (default: 0 for Azarbarzin)
+        desat_end_sec : int
+            Seconds after event END (default: 90)
         artifact_filter : str
             Artifact filter setting
         
@@ -775,22 +808,23 @@ class PSGAnalyzer:
             area_total = 0.0
             
             for _, ev in boot_events.iterrows():
+                start_t = ev['start']  # Use START instead of END
                 end_t = ev['end']
                 
-                # Get baseline
+                # Get baseline (100s before event START, 98th percentile)
                 base_df = self.df_spo2[
-                    (self.df_spo2['time'] >= end_t - pre_event_sec) &
-                    (self.df_spo2['time'] < end_t)
+                    (self.df_spo2['time'] >= start_t - pre_event_sec) &
+                    (self.df_spo2['time'] < start_t)
                 ]
                 
                 if len(base_df) == 0:
                     continue
                 
-                baseline = base_df['spo2'].max()
+                baseline = np.percentile(base_df['spo2'], 98)  # 98th percentile
                 
-                # Get desaturation window
+                # Get desaturation window (from START to END+90s)
                 win_df = self.df_spo2[
-                    (self.df_spo2['time'] >= end_t - desat_start_sec) &
+                    (self.df_spo2['time'] >= start_t + desat_start_sec) &
                     (self.df_spo2['time'] <= end_t + desat_end_sec)
                 ]
                 
