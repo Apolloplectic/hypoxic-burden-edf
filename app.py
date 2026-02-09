@@ -858,6 +858,245 @@ if edf_file is not None:
                 st.dataframe(pd.DataFrame(stage_data), use_container_width=True)
         
         # --------------------------------------------------------------
+        # CLINICAL VALIDATION MODULE
+        # --------------------------------------------------------------
+        st.markdown("---")
+        with st.expander("🏥 Clinical Validation Mode", expanded=False):
+            st.markdown("""
+            Compare automated analysis with manual PSG scoring to validate accuracy.
+            Useful for quality assurance and algorithm validation.
+            """)
+            
+            # Manual entry form
+            st.markdown("#### Enter Manual PSG Results")
+            st.caption("From clinical report or manual scoring")
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                manual_ahi = st.number_input(
+                    "Manual AHI",
+                    min_value=0.0,
+                    max_value=200.0,
+                    value=None,
+                    step=0.1,
+                    help="Apnea-Hypopnea Index from clinical report",
+                    key="manual_ahi_input"
+                )
+                
+                manual_odi = st.number_input(
+                    "Manual ODI",
+                    min_value=0.0,
+                    max_value=200.0,
+                    value=None,
+                    step=0.1,
+                    help="Oxygen Desaturation Index from clinical report",
+                    key="manual_odi_input"
+                )
+            
+            with col2:
+                manual_total_events = st.number_input(
+                    "Total Events",
+                    min_value=0,
+                    value=None,
+                    step=1,
+                    help="Total number of apnea/hypopnea events",
+                    key="manual_events_input"
+                )
+                
+                manual_tst = st.number_input(
+                    "Total Sleep Time (hours)",
+                    min_value=0.0,
+                    max_value=24.0,
+                    value=None,
+                    step=0.1,
+                    help="Total sleep time in hours",
+                    key="manual_tst_input"
+                )
+            
+            with col3:
+                manual_baseline_spo2 = st.number_input(
+                    "Baseline SpO₂ (%)",
+                    min_value=70.0,
+                    max_value=100.0,
+                    value=None,
+                    step=0.1,
+                    help="Baseline oxygen saturation",
+                    key="manual_baseline_input"
+                )
+            
+            # Only show comparison if at least AHI is entered
+            if manual_ahi is not None:
+                st.markdown("---")
+                st.markdown("#### 📊 Comparison Results")
+                
+                # Build comparison data
+                comparison_metrics = []
+                
+                # AHI comparison
+                if manual_ahi is not None:
+                    ahi_diff = results['ahi'] - manual_ahi
+                    ahi_pct = (ahi_diff / manual_ahi * 100) if manual_ahi > 0 else 0
+                    comparison_metrics.append({
+                        'Metric': 'AHI',
+                        'Automated': f"{results['ahi']:.1f}",
+                        'Manual': f"{manual_ahi:.1f}",
+                        'Difference': f"{ahi_diff:+.1f}",
+                        '% Diff': f"{ahi_pct:+.1f}%"
+                    })
+                
+                # ODI comparison
+                if manual_odi is not None:
+                    odi_diff = results['odi'] - manual_odi
+                    odi_pct = (odi_diff / manual_odi * 100) if manual_odi > 0 else 0
+                    comparison_metrics.append({
+                        'Metric': 'ODI',
+                        'Automated': f"{results['odi']:.1f}",
+                        'Manual': f"{manual_odi:.1f}",
+                        'Difference': f"{odi_diff:+.1f}",
+                        '% Diff': f"{odi_pct:+.1f}%"
+                    })
+                
+                # Events comparison
+                if manual_total_events is not None:
+                    events_diff = len(results['events']) - manual_total_events
+                    events_pct = (events_diff / manual_total_events * 100) if manual_total_events > 0 else 0
+                    comparison_metrics.append({
+                        'Metric': 'Total Events',
+                        'Automated': f"{len(results['events'])}",
+                        'Manual': f"{manual_total_events}",
+                        'Difference': f"{events_diff:+.0f}",
+                        '% Diff': f"{events_pct:+.1f}%"
+                    })
+                
+                # TST comparison
+                if manual_tst is not None:
+                    tst_diff = results['duration'] - manual_tst
+                    tst_pct = (tst_diff / manual_tst * 100) if manual_tst > 0 else 0
+                    comparison_metrics.append({
+                        'Metric': 'TST (hours)',
+                        'Automated': f"{results['duration']:.1f}",
+                        'Manual': f"{manual_tst:.1f}",
+                        'Difference': f"{tst_diff:+.1f}",
+                        '% Diff': f"{tst_pct:+.1f}%"
+                    })
+                
+                # Baseline SpO2 comparison
+                if manual_baseline_spo2 is not None and results.get('baseline_used'):
+                    baseline_diff = results['baseline_used'] - manual_baseline_spo2
+                    baseline_pct = (baseline_diff / manual_baseline_spo2 * 100) if manual_baseline_spo2 > 0 else 0
+                    comparison_metrics.append({
+                        'Metric': 'Baseline SpO₂',
+                        'Automated': f"{results['baseline_used']:.1f}",
+                        'Manual': f"{manual_baseline_spo2:.1f}",
+                        'Difference': f"{baseline_diff:+.1f}",
+                        '% Diff': f"{baseline_pct:+.1f}%"
+                    })
+                
+                # Display comparison table
+                df_comparison = pd.DataFrame(comparison_metrics)
+                st.dataframe(df_comparison, use_container_width=True, hide_index=True)
+                
+                # Calculate agreement statistics
+                pct_diffs = []
+                for metric in comparison_metrics:
+                    pct_str = metric['% Diff'].replace('%', '').replace('+', '')
+                    try:
+                        pct_diffs.append(abs(float(pct_str)))
+                    except:
+                        pass
+                
+                if pct_diffs:
+                    mape = np.mean(pct_diffs)
+                    
+                    # Agreement metrics
+                    st.markdown("#### 📈 Agreement Statistics")
+                    
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.metric(
+                            "Mean Absolute % Error",
+                            f"{mape:.1f}%",
+                            help="Average percentage difference across all metrics"
+                        )
+                    
+                    with col2:
+                        # Determine agreement level
+                        if mape < 10:
+                            agreement = "Good"
+                            agreement_color = "🟢"
+                        elif mape < 20:
+                            agreement = "Fair"
+                            agreement_color = "🟡"
+                        else:
+                            agreement = "Poor"
+                            agreement_color = "🔴"
+                        
+                        st.metric(
+                            "Overall Agreement",
+                            f"{agreement_color} {agreement}",
+                            help="Good: <10%, Fair: 10-20%, Poor: >20%"
+                        )
+                    
+                    with col3:
+                        # Count metrics within 10%
+                        within_10pct = sum(1 for x in pct_diffs if x < 10)
+                        total_metrics = len(pct_diffs)
+                        
+                        st.metric(
+                            "Metrics within 10%",
+                            f"{within_10pct}/{total_metrics}",
+                            help="Number of metrics with <10% difference"
+                        )
+                    
+                    # Interpretation guide
+                    with st.expander("💡 How to Interpret Results"):
+                        st.markdown("""
+                        **Agreement Levels:**
+                        - 🟢 **Good** (MAPE < 10%): Automated analysis closely matches manual scoring
+                        - 🟡 **Fair** (MAPE 10-20%): Reasonable agreement, some differences expected
+                        - 🔴 **Poor** (MAPE > 20%): Significant differences, review recommended
+                        
+                        **Common Reasons for Differences:**
+                        - Different scoring criteria (AASM versions)
+                        - Event detection sensitivity settings
+                        - Artifact handling approaches
+                        - Baseline calculation methods
+                        - Sleep staging algorithm differences
+                        
+                        **When to Investigate:**
+                        - Any single metric differs by >25%
+                        - Multiple metrics show consistent bias (all over/under)
+                        - TST differs significantly (suggests staging issues)
+                        """)
+                    
+                    # Export validation results
+                    st.markdown("---")
+                    if st.button("📥 Export Validation Report (JSON)", key="export_validation"):
+                        validation_report = {
+                            'file': edf_file.name,
+                            'validation_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            'metrics_comparison': comparison_metrics,
+                            'agreement_statistics': {
+                                'mape': float(mape),
+                                'agreement_level': agreement,
+                                'metrics_within_10pct': f"{within_10pct}/{total_metrics}"
+                            }
+                        }
+                        
+                        import json
+                        json_str = json.dumps(validation_report, indent=2)
+                        
+                        st.download_button(
+                            label="⬇️ Download Validation Report",
+                            data=json_str,
+                            file_name=f"validation_{edf_file.name.replace('.edf', '')}_{datetime.now().strftime('%Y%m%d')}.json",
+                            mime="application/json",
+                            key="download_validation_json"
+                        )
+        
+        # --------------------------------------------------------------
         # FEATURE #5: INTERACTIVE DESATURATION PLOT (Plotly)
         # --------------------------------------------------------------
         st.markdown("---")
