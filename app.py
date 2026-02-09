@@ -796,7 +796,7 @@ if edf_file is not None:
                     desat_end_sec=desat_end_sec,
                     artifact_filter=artifact_filter,
                     desat_threshold=desat_threshold,
-                    use_global_hb=use_global_hb,
+                    use_global_hb=True,  # Always calculate Global HB
                     preset_baseline=preset_baseline,
                     use_mit_st=st.session_state.use_mit_st
                 )
