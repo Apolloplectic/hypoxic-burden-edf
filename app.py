@@ -19,7 +19,13 @@ import zipfile
 
 # Import custom modules
 from analysis_engine import PSGAnalyzer
-from pdf_generator import PDFReportGenerator
+try:
+    from pdf_generator import PDFReportGenerator
+    PDF_AVAILABLE = True
+except ImportError:
+    PDF_AVAILABLE = False
+    print("⚠️ pdf_generator.py not found - PDF export disabled")
+    
 from utils import initialize_session_state, load_edf_file
 from config import YASA_AVAILABLE
 from validation import PSGValidator, check_zero_events, check_unrealistic_hb
@@ -913,7 +919,7 @@ if edf_file is not None:
         with col2:
             include_stages = st.checkbox("Include stage-specific results", value=True)
         
-        if st.button("📥 Download PDF Report", type="primary", use_container_width=True):
+        if PDF_AVAILABLE and st.button("📥 Download PDF Report", type="primary", use_container_width=True):
             with st.spinner("Generating PDF report..."):
                 pdf_generator = PDFReportGenerator()
                 buffer = pdf_generator.generate_report(
@@ -931,6 +937,8 @@ if edf_file is not None:
                     type="primary",
                     use_container_width=True
                 )
+        elif not PDF_AVAILABLE:
+            st.info("ℹ️ PDF export currently unavailable. Use Excel export below instead.")
         
         # --------------------------------------------------------------
         # EXCEL EXPORT (Feature #9)
@@ -1597,17 +1605,19 @@ if batch_files:
                     use_mit_st=False
                 )
                 
-                # Generate PDF
-                pdf_generator = PDFReportGenerator()
-                buffer = pdf_generator.generate_report(
-                    filename=current_file.name,
-                    results=results,
-                    proof_mode=batch_proof_mode,
-                    include_stages=batch_include_stages
-                )
-                
-                # Store results
-                st.session_state.batch_results.append((current_file.name, buffer))
+                # Generate PDF (if available)
+                if PDF_AVAILABLE:
+                    pdf_generator = PDFReportGenerator()
+                    buffer = pdf_generator.generate_report(
+                        filename=current_file.name,
+                        results=results,
+                        proof_mode=batch_proof_mode,
+                        include_stages=batch_include_stages
+                    )
+                    # Store results
+                    st.session_state.batch_results.append((current_file.name, buffer))
+                else:
+                    st.warning("⚠️ PDF generation unavailable for batch mode. Skipping PDF creation.")
                 
                 # Add to summary
                 summary_row = {
@@ -1639,20 +1649,21 @@ if batch_files:
         # Generate master summary and ZIP
         status_text.text("📊 Generating master summary...")
         
-        pdf_generator = PDFReportGenerator()
-        master_buffer = pdf_generator.generate_batch_summary(batch_summary_data)
+        if PDF_AVAILABLE and len(st.session_state.batch_results) > 0:
+            pdf_generator = PDFReportGenerator()
+            master_buffer = pdf_generator.generate_batch_summary(batch_summary_data)
         
-        # Create ZIP file
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-            # Add individual reports
-            for filename, pdf_buffer in st.session_state.batch_results:
-                zf.writestr(
-                    f"Reports/HB_Report_{filename.replace('.edf', '')}.pdf",
-                    pdf_buffer.getvalue()
-                )
-            
-            # Add master summary
+            # Create ZIP file
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+                # Add individual reports
+                for filename, pdf_buffer in st.session_state.batch_results:
+                    zf.writestr(
+                        f"Reports/HB_Report_{filename.replace('.edf', '')}.pdf",
+                        pdf_buffer.getvalue()
+                    )
+                
+                # Add master summary
             zf.writestr("Master_Summary.pdf", master_buffer.getvalue())
         
         zip_buffer.seek(0)
