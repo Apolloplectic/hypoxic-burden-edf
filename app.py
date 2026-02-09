@@ -9,14 +9,10 @@ GitHub: https://github.com/Apolloplectic/hypoxic-burden-edf
 """
 
 import streamlit as st
-import pandas as pd
-import numpy as np
 import os
 from datetime import datetime
 import io
 import zipfile
-import matplotlib.pyplot as plt
-import json
 
 # Import custom modules
 from analysis_engine import PSGAnalyzer
@@ -36,13 +32,62 @@ st.set_page_config(
 # --------------------------------------------------------------
 # HEADER
 # --------------------------------------------------------------
-st.title("🧠 Hypoxic Burden Calculator")
+st.title("🫁 Hypoxic Burden Calculator")
 st.markdown("""
 **Upload PSG EDF file** → get comprehensive sleep apnea metrics with **95% CI**.
 
 Based on:
 > Azarbarzin A, et al. *European Heart Journal* (2019) – DOI: [10.1093/eurheartj/ehy624](https://doi.org/10.1093/eurheartj/ehy624)
 """)
+
+# --------------------------------------------------------------
+# FILE UPLOAD SECTION
+# --------------------------------------------------------------
+st.markdown("### 📁 Single File Analysis")
+edf_file = st.file_uploader(
+    "Upload PSG EDF file",
+    type=["edf"],
+    help="⚠️ Online version limited to 200 MB. For larger files (up to 2 GB), run locally (see instructions below).",
+    key="single_file_upload"
+)
+
+# --------------------------------------------------------------
+# LOCAL RUN INSTRUCTIONS
+# --------------------------------------------------------------
+with st.expander("📥 File too large? Run locally (2 GB+ support) — no coding needed!", expanded=False):
+    st.markdown("""
+    ### **How to Run This App on Your Computer (2 GB+ Files)**
+    **No programming experience required. Takes 5 minutes.**
+    
+    ---
+    
+    #### **Step 1: Install Python (if not already installed)**
+    1. Download Python 3.9+ from [python.org](https://www.python.org/downloads/)
+    2. During installation, **check "Add Python to PATH"**
+    
+    ---
+    
+    #### **Step 2: Download & Setup**
+    1. Download the app from [GitHub Releases](https://github.com/Apolloplectic/hypoxic-burden-edf/releases)
+    2. Unzip the folder
+    3. Open terminal/command prompt in that folder
+    4. Run: `pip install -r requirements.txt`
+    
+    ---
+    
+    #### **Step 3: Run the App**
+    In terminal, run: `streamlit run app.py --server.maxUploadSize=4096`
+    
+    The `--server.maxUploadSize=4096` flag allows uploads up to **4 GB**.
+    
+    Your browser will open automatically with the app running locally.
+    
+    ---
+    
+    **Need help?** 
+    - 📧 Email: `sam.johnson9797@gmail.com`
+    - 🐙 GitHub Issues: [Report a problem](https://github.com/Apolloplectic/hypoxic-burden-edf/issues)
+    """)
 
 # --------------------------------------------------------------
 # INITIALIZE SESSION STATE
@@ -60,7 +105,8 @@ PRESETS = {
         'desat_threshold': 3,
         'artifact_filter': 'Off',
         'use_global_hb': True,
-        'preset_baseline': 0.0
+        'preset_baseline': 0.0,
+        'description': "Validated parameters from the original Azarbarzin et al. study (EHJ 2019)"
     },
     "AASM 2023 Standard": {
         'pre_event_sec': 120,
@@ -69,7 +115,8 @@ PRESETS = {
         'desat_threshold': 3,
         'artifact_filter': 'Mild (10%/s)',
         'use_global_hb': True,
-        'preset_baseline': 0.0
+        'preset_baseline': 0.0,
+        'description': "Current clinical practice guidelines with conservative parameters"
     },
     "Conservative (High Specificity)": {
         'pre_event_sec': 100,
@@ -78,7 +125,8 @@ PRESETS = {
         'desat_threshold': 4,
         'artifact_filter': 'Strict (5%/s)',
         'use_global_hb': False,
-        'preset_baseline': 0.0
+        'preset_baseline': 0.0,
+        'description': "Minimizes false positives - only counts definite events (4% threshold)"
     },
     "Aggressive (High Sensitivity)": {
         'pre_event_sec': 80,
@@ -87,102 +135,60 @@ PRESETS = {
         'desat_threshold': 3,
         'artifact_filter': 'Off',
         'use_global_hb': True,
-        'preset_baseline': 0.0
+        'preset_baseline': 0.0,
+        'description': "Maximizes event detection - catches all possible desaturations"
     },
-    "Custom": None
+    "Custom": {
+        'pre_event_sec': 100,
+        'desat_start_sec': 60,
+        'desat_end_sec': 120,
+        'desat_threshold': 3,
+        'artifact_filter': 'Off',
+        'use_global_hb': True,
+        'preset_baseline': 0.0,
+        'description': "Manually configure all parameters using sliders"
+    }
 }
 
-# --------------------------------------------------------------
-# FILE UPLOAD SECTION
-# --------------------------------------------------------------
-st.markdown("### 📁 Single File Analysis")
-edf_file = st.file_uploader(
-    "Upload PSG EDF file",
-    type=["edf"],
-    help="⚠️ Online version limited to 200 MB. For larger files (up to 2 GB), run locally.",
-    key="single_file_upload"
-)
-
-# Show file info after upload
-if edf_file is not None:
-    file_size_mb = edf_file.size / 1e6
-    
-    if file_size_mb < 50:
-        st.success(f"✅ **{edf_file.name}** uploaded ({file_size_mb:.1f} MB)")
-    elif file_size_mb < 200:
-        st.info(f"📁 **{edf_file.name}** uploaded ({file_size_mb:.1f} MB)")
-    else:
-        st.warning(f"⚠️ **{edf_file.name}** uploaded ({file_size_mb:.1f} MB) - Large file! For best performance, run locally.")
-
-# Local run instructions expander
-with st.expander("📦 File too large? Run locally (2 GB+ support) — no coding needed!", expanded=False):
-    st.markdown("""
-    ### **How to Run This App on Your Computer (2 GB+ Files)**
-    **No programming experience required. Takes 5 minutes.**
-    
-    #### **Step 1: Install Python**
-    - Download Python 3.9 or 3.10 from [python.org](https://python.org)
-    - Run installer (check "Add to PATH")
-    
-    #### **Step 2: Download This App**
-    ```bash
-    git clone https://github.com/Apolloplectic/hypoxic-burden-edf.git
-    cd hypoxic-burden-edf
-    ```
-    
-    #### **Step 3: Install Dependencies**
-    ```bash
-    pip install -r requirements.txt
-    ```
-    
-    #### **Step 4: Run With Large File Support**
-    ```bash
-    streamlit run app.py --server.maxUploadSize=4096
-    ```
-    
-    The app will open in your browser automatically. Upload files up to **4 GB**!
-    
-    ---
-    **Need help?** Email: `sam.johnson9797@gmail.com`
-    """)
-
-# --------------------------------------------------------------
-# ANALYSIS SECTION
-# --------------------------------------------------------------
+# =============================================
+# SINGLE FILE ANALYSIS MODE
+# =============================================
 if edf_file is not None:
     # Load EDF file
-    with st.spinner(f"Loading {edf_file.name}..."):
+    with st.spinner(f"📂 Loading {edf_file.name} ({edf_file.size / 1e6:.1f} MB)..."):
         raw, temp_path = load_edf_file(edf_file)
     
     if raw is None:
-        st.error("❌ Failed to load EDF file. Please check file format.")
+        st.error("❌ Failed to load EDF file. Please check the file format.")
         st.stop()
     
-    st.success(f"✅ EDF loaded successfully! Duration: {raw.times[-1]/3600:.1f} hours")
+    st.success(f"✅ EDF loaded successfully! Duration: {raw.times[-1]/3600:.2f} hours")
     
-    # Create analyzer
+    # Initialize analyzer
     analyzer = PSGAnalyzer(raw, temp_path)
     
-    # Display channel detection
-    st.markdown("#### 🔍 Detected Channels")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.write(f"**SpO₂:** `{analyzer.spo2_ch or 'Not found'}`")
-    with col2:
-        st.write(f"**Airflow:** `{analyzer.flow_ch or 'Not found'}`")
-    with col3:
-        st.write(f"**EEG:** `{analyzer.eeg_ch or 'Not found'}`")
+    # Display detected channels
+    st.write(f"**SpO₂:** `{analyzer.spo2_ch or 'Not found ❌'}`")
+    st.write(f"**Airflow:** `{analyzer.flow_ch or 'Not found (will use SpO₂-based detection)'}`")
+    st.write(f"**EEG:** `{analyzer.eeg_ch or 'Not found (staging limited)'}`")
     
     if not analyzer.spo2_ch:
         st.error("❌ SpO₂ channel is required for analysis.")
         st.stop()
     
     # Check for MIT annotations
-    use_mit_st = analyzer.manual_ahi is not None
-    if use_mit_st:
-        st.success("✅ MIT gold standard annotations found!")
+    if analyzer.check_mit_annotations():
+        use_mit = st.checkbox(
+            "✨ Use MIT Gold Standard Annotations",
+            value=True,
+            help="MIT-annotated sleep stages and events from SHHS/slpdb database"
+        )
+        st.session_state.use_mit_st = use_mit
+        if use_mit:
+            st.success(f"🎯 MIT annotations loaded: {len(analyzer.manual_events)} events, AHI = {analyzer.manual_ahi:.1f}")
     else:
         st.info("ℹ️ No MIT annotations found — using automated detection")
+        st.session_state.use_mit_st = False
     
     # --------------------------------------------------------------
     # ADVANCED SETTINGS WITH PRESETS
@@ -190,595 +196,346 @@ if edf_file is not None:
     with st.expander("⚙️ Advanced Settings", expanded=False):
         # Preset selector
         preset_choice = st.selectbox(
-            "📋 Quick Presets",
+            "📋 Analysis Preset",
             list(PRESETS.keys()),
             index=0,
-            help="Select a preset configuration or choose 'Custom' for manual settings"
+            help="Choose a validated preset or customize all parameters"
         )
         
-        # Load preset or use custom
-        if preset_choice != "Custom" and PRESETS[preset_choice]:
-            params = PRESETS[preset_choice].copy()
-            st.info(f"✨ Using **{preset_choice}** preset")
-        else:
-            params = PRESETS["Azarbarzin 2019 (Default)"].copy()
+        # Show preset description
+        st.info(f"ℹ️ **{preset_choice}:** {PRESETS[preset_choice]['description']}")
         
-        st.markdown("#### Event Detection Parameters")
-        col1, col2 = st.columns(2)
-        with col1:
-            if preset_choice == "Custom":
-                params['pre_event_sec'] = st.selectbox(
-                    "Pre-event baseline (s)", 
-                    [60, 80, 100, 120], 
-                    index=2
-                )
-                params['desat_start_sec'] = st.selectbox(
-                    "Desat start before end (s)", 
-                    [30, 45, 60, 90], 
-                    index=2
-                )
-            else:
-                st.write(f"**Pre-event baseline:** {params['pre_event_sec']}s")
-                st.write(f"**Desat start:** {params['desat_start_sec']}s")
+        # Load preset values
+        params = PRESETS[preset_choice].copy()
         
-        with col2:
-            if preset_choice == "Custom":
-                params['desat_end_sec'] = st.selectbox(
-                    "Desat end after end (s)", 
-                    [90, 120, 150, 180], 
-                    index=1
+        st.markdown("---")
+        
+        # If Custom, show sliders; otherwise show read-only values
+        if preset_choice == "Custom":
+            st.markdown("#### 🎚️ Event Detection Parameters")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                params['pre_event_sec'] = st.slider(
+                    "Pre-event baseline window (s)",
+                    min_value=30,
+                    max_value=180,
+                    value=params['pre_event_sec'],
+                    step=1,
+                    help="Time before event to calculate baseline SpO₂"
+                )
+                params['desat_start_sec'] = st.slider(
+                    "Desaturation start (s before event end)",
+                    min_value=15,
+                    max_value=120,
+                    value=params['desat_start_sec'],
+                    step=1,
+                    help="Start of desaturation window"
+                )
+            
+            with col2:
+                params['desat_end_sec'] = st.slider(
+                    "Desaturation end (s after event end)",
+                    min_value=60,
+                    max_value=240,
+                    value=params['desat_end_sec'],
+                    step=1,
+                    help="End of desaturation window (recovery time)"
                 )
                 params['artifact_filter'] = st.selectbox(
-                    "SpO₂ artifact filter", 
-                    ["Off", "Mild (10%/s)", "Strict (5%/s)"], 
-                    index=0
+                    "SpO₂ artifact filter",
+                    ["Off", "Mild (10%/s)", "Strict (5%/s)"],
+                    index=["Off", "Mild (10%/s)", "Strict (5%/s)"].index(params['artifact_filter']),
+                    help="Remove physiologically impossible SpO₂ changes"
                 )
-            else:
-                st.write(f"**Desat end:** {params['desat_end_sec']}s")
-                st.write(f"**Artifact filter:** {params['artifact_filter']}")
-        
-        st.markdown("#### Scoring Parameters")
-        col3, col4 = st.columns(2)
-        with col3:
-            if preset_choice == "Custom":
+            
+            st.markdown("#### 📊 Scoring Parameters")
+            col3, col4 = st.columns(2)
+            
+            with col3:
                 scoring_rule = st.selectbox(
-                    "Scoring Rule", 
-                    ["3% (AASM)", "4% (Legacy)"], 
-                    index=0
+                    "Desaturation threshold",
+                    ["3% (AASM)", "4% (Legacy)"],
+                    index=0 if params['desat_threshold'] == 3 else 1,
+                    help="AASM recommends 3%"
                 )
                 params['desat_threshold'] = 3 if "3%" in scoring_rule else 4
-            else:
-                st.write(f"**Desat threshold:** {params['desat_threshold']}%")
-        
-        with col4:
-            if preset_choice == "Custom":
+            
+            with col4:
                 params['use_global_hb'] = st.checkbox(
-                    "Calculate Global Hypoxic Burden", 
-                    value=True,
-                    help="Whole-study desaturation burden"
+                    "Calculate Global HB",
+                    value=params['use_global_hb'],
+                    help="Total oxygen debt over entire study"
                 )
+            
+            if params['use_global_hb']:
+                baseline_method = st.radio(
+                    "Baseline SpO₂ method",
+                    ["Automatic (95th percentile)", "Manual entry"],
+                    help="Auto removes outliers/desaturations"
+                )
+                
+                if baseline_method == "Manual entry":
+                    params['preset_baseline'] = st.slider(
+                        "Baseline SpO₂ (%)",
+                        min_value=80.0,
+                        max_value=100.0,
+                        value=95.0,
+                        step=0.1,
+                        format="%.1f"
+                    )
+                else:
+                    params['preset_baseline'] = 0.0
             else:
-                st.write(f"**Global HB:** {'Enabled' if params['use_global_hb'] else 'Disabled'}")
+                params['preset_baseline'] = 0.0
         
-        if params['use_global_hb']:
-            if preset_choice == "Custom":
-                params['preset_baseline'] = st.number_input(
-                    "Baseline SpO₂ (%, 0=auto)",
-                    min_value=0.0,
-                    max_value=99.0,
-                    value=0.0,
-                    step=0.1,
-                    help="0 = automatic 95th percentile"
-                )
-            else:
-                baseline_text = 'Auto' if params['preset_baseline'] == 0 else f'{params["preset_baseline"]:.1f}%'
-                st.write(f"**Baseline:** {baseline_text}")
-                                                                                           
-        # Warnings for non-default
-        if preset_choice == "Azarbarzin 2019 (Default)":
-            st.success("✅ Using validated Azarbarzin 2019 parameters")
-        elif preset_choice != "Custom":
-            st.warning(f"⚠️ Using {preset_choice} - results may differ from published values")
-
+        else:
+            # Show preset values (read-only)
+            st.markdown("#### 📋 Preset Configuration")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write(f"**Pre-event baseline:** {params['pre_event_sec']}s")
+                st.write(f"**Desat start:** {params['desat_start_sec']}s before end")
+                st.write(f"**Desat end:** {params['desat_end_sec']}s after end")
+            
+            with col2:
+                st.write(f"**Artifact filter:** {params['artifact_filter']}")
+                st.write(f"**Desat threshold:** {params['desat_threshold']}%")
+                st.write(f"**Global HB:** {'Enabled' if params['use_global_hb'] else 'Disabled'}")
+            
+            if params['use_global_hb']:
+                baseline_text = 'Auto (95th percentile)' if params['preset_baseline'] == 0 else f'{params["preset_baseline"]:.1f}%'
+                st.write(f"**Baseline SpO₂:** {baseline_text}")
+        
+        # Store in session state
+        st.session_state.analysis_params = params
+        
+        # Warnings for non-default settings
+        if preset_choice == "Custom":
+            if params['pre_event_sec'] != 100:
+                st.warning(f"⚠️ Pre-event window: {params['pre_event_sec']}s (Azarbarzin default: 100s)")
+            if params['desat_start_sec'] != 60 or params['desat_end_sec'] != 120:
+                st.warning(f"⚠️ Desat window: -{params['desat_start_sec']}s/+{params['desat_end_sec']}s (Azarbarzin: -60s/+120s)")
+            if params['desat_threshold'] != 3:
+                st.warning("⚠️ Using 4% threshold (non-AASM)")
+            if params['artifact_filter'] != "Off":
+                st.warning(f"⚠️ Artifact filtering enabled: {params['artifact_filter']}")
+        elif preset_choice != "Azarbarzin 2019 (Default)":
+            st.info(f"✨ Using **{preset_choice}** - results may differ from Azarbarzin 2019 baseline")
+    
+    # Extract params for use
+    pre_event_sec = params['pre_event_sec']
+    desat_start_sec = params['desat_start_sec']
+    desat_end_sec = params['desat_end_sec']
+    artifact_filter = params['artifact_filter']
+    desat_threshold = params['desat_threshold']
+    use_global_hb = params['use_global_hb']
+    preset_baseline = params['preset_baseline']
+    if desat_threshold == 4:
+        st.warning("⚠️ Using 4% desaturation threshold (non-AASM standard)")
+    if artifact_filter != "Off":
+        st.info(f"ℹ️ Artifact filter enabled: {artifact_filter}")
+    if not analyzer.flow_ch:
+        st.warning("⚠️ No airflow channel found — AHI will be estimated from SpO₂ desaturations only")
+    
     # --------------------------------------------------------------
-    # ANALYZE BUTTON
+    # ANALYSIS BUTTON
     # --------------------------------------------------------------
+    st.markdown("---")
+    
     if not st.session_state.analyzed:
         if st.button("🚀 Analyze File", type="primary", use_container_width=True):
             st.session_state.analyzed = True
             st.rerun()
     else:
-        # --------------------------------------------------------------
-        # ANALYSIS WITH PROGRESS INDICATOR
-        # --------------------------------------------------------------
+        # Run analysis
+        with st.spinner("🔬 Analyzing PSG data..."):
+            results = analyzer.run_full_analysis(
+                pre_event_sec=pre_event_sec,
+                desat_start_sec=desat_start_sec,
+                desat_end_sec=desat_end_sec,
+                artifact_filter=artifact_filter,
+                desat_threshold=desat_threshold,
+                use_global_hb=use_global_hb,
+                preset_baseline=preset_baseline,
+                use_mit_st=st.session_state.use_mit_st
+            )
+        
+        # Display results
         st.markdown("---")
-        st.markdown("### 🔬 Analysis in Progress")
+        st.subheader("📊 Analysis Results")
         
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        # Step 1/7
-        status_text.text("Step 1/7: Preprocessing SpO₂ signal...")
-        progress_bar.progress(1/7)
-        
-        # Step 2/7
-        status_text.text("Step 2/7: Detecting oxygen desaturation events...")
-        progress_bar.progress(2/7)
-        
-        # Step 3/7
-        status_text.text("Step 3/7: Detecting apnea/hypopnea events...")
-        progress_bar.progress(3/7)
-        
-        # Step 4/7
-        status_text.text("Step 4/7: Performing sleep staging...")
-        progress_bar.progress(4/7)
-        
-        # Step 5/7  
-        status_text.text("Step 5/7: Calculating hypoxic burden...")
-        progress_bar.progress(5/7)
-        
-        # Run full analysis
-        results = analyzer.run_full_analysis(
-            pre_event_sec=params['pre_event_sec'],
-            desat_start_sec=params['desat_start_sec'],
-            desat_end_sec=params['desat_end_sec'],
-            artifact_filter=params['artifact_filter'],
-            desat_threshold=params['desat_threshold'],
-            use_global_hb=params['use_global_hb'],
-            preset_baseline=params['preset_baseline'],
-            use_mit_st=use_mit_st
-        )
-        
-        # Step 6/7
-        status_text.text("Step 6/7: Computing confidence intervals...")
-        progress_bar.progress(6/7)
-        
-        # Step 7/7
-        status_text.text("Step 7/7: Finalizing results...")
-        progress_bar.progress(1.0)
-        
-        status_text.text("✅ Analysis complete!")
-        
-        # Clear progress after 1 second
-        import time
-        time.sleep(1)
-        progress_bar.empty()
-        status_text.empty()
-        
-        # --------------------------------------------------------------
-        # RESULTS DISPLAY
-        # --------------------------------------------------------------
-        st.markdown("---")
-        
-        # Calculate risk level
-        total_hb = results['total_hb']
-        if total_hb < 20:
-            risk = "Low"
-            risk_emoji = "🟢"
-        elif total_hb < 53:
-            risk = "Moderate"
-            risk_emoji = "🟡"
-        elif total_hb < 88:
-            risk = "High"
-            risk_emoji = "🟠"
-        else:
-            risk = "Very High"
-            risk_emoji = "🔴"
-        
-        # Calculate severity
-        ahi = results['ahi']
-        if ahi < 5:
-            severity = "Normal"
-        elif ahi < 15:
-            severity = "Mild OSA"
-        elif ahi < 30:
-            severity = "Moderate OSA"
-        else:
-            severity = "Severe OSA"
-        
-        # --------------------------------------------------------------
-        # SUMMARY CARD AT TOP
-        # --------------------------------------------------------------
-        st.markdown("## 📋 Executive Summary")
-        
-        summary_col1, summary_col2, summary_col3 = st.columns(3)
-        
-        with summary_col1:
-            st.markdown("#### 😴 Sleep Quality")
-            st.write(f"**Duration:** {results['duration']:.1f} hours")
-            staging_method = "YASA (AI)" if (YASA_AVAILABLE and analyzer.eeg_ch) else "Rule-based"
-            if use_mit_st:
-                staging_method = "MIT Gold Standard"
-            st.write(f"**Staging:** {staging_method}")
-            
-        with summary_col2:
-            st.markdown("#### 🫁 Breathing Events")
-            st.write(f"**AHI:** {ahi:.1f} events/hr")
-            st.write(f"**Severity:** {severity}")
-            st.write(f"**ODI:** {results['odi']:.1f}")
-            
-        with summary_col3:
-            st.markdown("#### ⚕️ Risk Assessment")
-            st.write(f"**Hypoxic Burden:** {total_hb:.1f}")
-            st.write(f"**Risk Level:** {risk_emoji} {risk}")
-        
-        st.markdown("---")
-        
-        # --------------------------------------------------------------
-        # PRIMARY METRICS
-        # --------------------------------------------------------------
-        st.markdown("## 📊 Analysis Results")
-        
+        # Main metrics
         col1, col2, col3 = st.columns(3)
         
         with col1:
             st.metric(
-                "**AHI**",
-                f"{ahi:.1f}",
-                help="Apnea-Hypopnea Index: breathing pauses per hour. <5=normal, 5-15=mild, 15-30=moderate, >30=severe"
+                "AHI",
+                f"{results['ahi']:.1f}",
+                help="Apnea-Hypopnea Index (events per hour)"
             )
+            if results.get('manual_ahi') is not None:
+                delta = results['ahi'] - results['manual_ahi']
+                st.caption(f"MIT Gold Std: {results['manual_ahi']:.1f} (Δ {delta:+.1f})")
         
         with col2:
             st.metric(
-                f"**ODI ({params['desat_threshold']}%)**",
+                f"ODI ({desat_threshold}%)",
                 f"{results['odi']:.1f}",
-                help=f"Oxygen Desaturation Index: ≥{params['desat_threshold']}% drops per hour"
+                help=f"Oxygen Desaturation Index (≥{desat_threshold}% drops per hour)"
             )
         
         with col3:
-            ci_text = f"[{results['ci'][0]:.1f}–{results['ci'][1]:.1f}]"
-            st.metric(
-                "**Obstructive HB**",
-                f"{total_hb:.1f}",
-                delta=f"95% CI: {ci_text}",
-                delta_color="off",
-                help="Event-specific hypoxic burden (Azarbarzin method)"
-            )
-        
-        # --------------------------------------------------------------
-        # RISK VISUALIZATION
-        # --------------------------------------------------------------
-        st.markdown(f"### {risk_emoji} Risk Level: {risk}")
-        
-        # Risk scale with color-coded progress bar
-        risk_percentage = min(total_hb / 88, 1.0)
-        
-        if risk == "Low":
-            st.progress(risk_percentage, text=f"Low Risk ({total_hb:.1f} / 88)")
-        elif risk == "Moderate":
-            st.progress(risk_percentage, text=f"Moderate Risk ({total_hb:.1f} / 88)")
-        elif risk == "High":
-            st.progress(risk_percentage, text=f"High Risk ({total_hb:.1f} / 88)")
-        else:
-            st.progress(1.0, text=f"Very High Risk ({total_hb:.1f}+)")
-        
-        st.caption("Risk thresholds: Low <20 | Moderate 20-53 | High 53-88 | Very High ≥88")
-        
-        # --------------------------------------------------------------
-        # COLLAPSIBLE SECTIONS
-        # --------------------------------------------------------------
-        
-        # Global Hypoxic Burden
-        if results.get('global_hb') is not None:
-            with st.expander("🌍 Global Hypoxic Burden Details", expanded=False):
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.metric(
-                        "Global HB",
-                        f"{results['global_hb']:.1f} (%min)/h",
-                        help="Total desaturation area over entire sleep study"
-                    )
-                with col2:
-                    st.metric(
-                        "Baseline SpO₂",
-                        f"{results['baseline_used']:.1f}%",
-                        help="Automatically calculated as 95th percentile" if params['preset_baseline'] == 0 else "User-specified baseline"
-                    )
-                
-                st.markdown("**Methodology:**")
-                st.write("Global HB measures the total 'oxygen debt' across the entire sleep study, "
-                        "not just during apnea events. Calculated as the area between the SpO₂ curve "
-                        "and the baseline, normalized per hour.")
-        
-        # Sleep Architecture with Hypnogram
-        with st.expander("😴 Sleep Architecture & Hypnogram", expanded=True):
-            if analyzer.stages and len(analyzer.stages) > 0:
-                # Sleep Hypnogram
-                st.markdown("#### Sleep Hypnogram")
-                
-                stage_map = {'W': 0, 'REM': 1, 'N1': 2, 'N2': 3, 'N3': 4, 'Unknown': 2}
-                stage_values = [stage_map.get(s, 2) for s in analyzer.stages]
-                time_epochs = np.arange(len(stage_values)) * 0.5  # 30s = 0.5 min
-                
-                fig_hypno, ax = plt.subplots(figsize=(12, 3))
-                ax.plot(time_epochs, stage_values, linewidth=1.0, color='#1f77b4')
-                ax.fill_between(time_epochs, stage_values, 0, alpha=0.3, color='#1f77b4')
-                ax.set_yticks([0, 1, 2, 3, 4])
-                ax.set_yticklabels(['Wake', 'REM', 'N1', 'N2', 'N3'])
-                ax.set_xlabel('Time (minutes)')
-                ax.set_ylabel('Sleep Stage')
-                ax.set_title('Sleep Architecture Over Time')
-                ax.grid(True, alpha=0.2, axis='x')
-                ax.set_ylim(-0.5, 4.5)
-                
-                st.pyplot(fig_hypno)
-                plt.close(fig_hypno)
-                
-                st.markdown("---")
-                
-                # Stage-Specific Table
-                st.markdown("#### Stage-Specific Metrics")
-                
-                if results['stage_hb']:
-                    stage_data = []
-                    for stage in ['W', 'N1', 'N2', 'N3', 'REM']:
-                        if stage in results['stage_hb']:
-                            data = results['stage_hb'][stage]
-                            stage_data.append({
-                                'Stage': stage,
-                                'Time (h)': f"{data['hrs']:.1f}",
-                                'AHI': f"{data['AHI']:.1f}",
-                                'ODI': f"{data['ODI']:.1f}",
-                                'HB': f"{data['HB']:.2f}"
-                            })
-                    
-                    if stage_data:
-                        df_stages = pd.DataFrame(stage_data)
-                        st.dataframe(df_stages, use_container_width=True, hide_index=True)
-                        
-                        # Stage Comparison Charts
-                        st.markdown("#### Stage Comparison Charts")
-                        
-                        stages = [d['Stage'] for d in stage_data]
-                        ahis = [float(d['AHI']) for d in stage_data]
-                        hbs = [float(d['HB']) for d in stage_data]
-                        
-                        fig_charts, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
-                        
-                        colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8']
-                        
-                        # AHI by stage
-                        bars1 = ax1.bar(stages, ahis, color=colors)
-                        ax1.set_ylabel('AHI (events/hour)', fontsize=11)
-                        ax1.set_xlabel('Sleep Stage', fontsize=11)
-                        ax1.set_title('AHI by Sleep Stage', fontsize=12, fontweight='bold')
-                        ax1.grid(axis='y', alpha=0.3, linestyle='--')
-                        ax1.set_ylim(0, max(ahis) * 1.2 if max(ahis) > 0 else 10)
-                        
-                        # Add value labels on bars
-                        for bar, val in zip(bars1, ahis):
-                            height = bar.get_height()
-                            if height > 0:
-                                ax1.text(bar.get_x() + bar.get_width()/2., height,
-                                        f'{val:.1f}',
-                                        ha='center', va='bottom', fontsize=9)
-                        
-                        # HB by stage
-                        bars2 = ax2.bar(stages, hbs, color=colors)
-                        ax2.set_ylabel('Hypoxic Burden (%min/h)', fontsize=11)
-                        ax2.set_xlabel('Sleep Stage', fontsize=11)
-                        ax2.set_title('Hypoxic Burden by Sleep Stage', fontsize=12, fontweight='bold')
-                        ax2.grid(axis='y', alpha=0.3, linestyle='--')
-                        ax2.set_ylim(0, max(hbs) * 1.2 if max(hbs) > 0 else 10)
-                        
-                        # Add value labels on bars
-                        for bar, val in zip(bars2, hbs):
-                            height = bar.get_height()
-                            if height > 0:
-                                ax2.text(bar.get_x() + bar.get_width()/2., height,
-                                        f'{val:.1f}',
-                                        ha='center', va='bottom', fontsize=9)
-                        
-                        plt.tight_layout()
-                        st.pyplot(fig_charts)
-                        plt.close(fig_charts)
-                    else:
-                        st.warning("⚠️ No sleep stages detected in this recording")
-                else:
-                    st.warning("⚠️ Sleep staging failed - no stage-specific results available")
-            else:
-                st.info("ℹ️ Sleep staging not available for this file")
-        
-        # MIT Comparison (if available)
-        if results.get('manual_ahi') is not None:
-            with st.expander("🆚 Algorithm vs Manual Scoring", expanded=False):
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.metric("App AHI", f"{results['ahi']:.1f}")
-                with col2:
-                    st.metric("Manual (MIT) AHI", f"{results['manual_ahi']:.1f}")
-                with col3:
-                    delta = results['ahi'] - results['manual_ahi']
-                    st.metric("Difference", f"{delta:+.1f}", delta_color="off")
-                
-                # Show accuracy
-                if results['manual_ahi'] > 0:
-                    percent_diff = abs(delta / results['manual_ahi'] * 100)
-                    accuracy = max(0, 100 - percent_diff)
-                    st.progress(accuracy / 100, text=f"Agreement: {accuracy:.1f}%")
-        
-        # Advanced Metrics
-        with st.expander("📈 Advanced Metrics & Methodology", expanded=False):
-            st.markdown("#### Calculation Parameters")
-            st.write(f"**Pre-event baseline window:** {params['pre_event_sec']} seconds")
-            st.write(f"**Desaturation window:** -{params['desat_start_sec']}s to +{params['desat_end_sec']}s")
-            st.write(f"**Desaturation threshold:** {params['desat_threshold']}%")
-            st.write(f"**Artifact filter:** {params['artifact_filter']}")
-            
-            st.markdown("#### Methodology")
-            st.write("**Obstructive HB:** Event-specific method from Azarbarzin et al. "
-                    "Calculates area under desaturation curve for each apnea/hypopnea event.")
-            st.write("**Global HB:** Total desaturation area below baseline over entire sleep study.")
-            st.write("**Confidence Intervals:** Bootstrap resampling with 1000 iterations.")
-            
-            if analyzer.stages:
-                staging_method = "MIT gold standard" if use_mit_st else \
-                                "YASA deep learning" if (YASA_AVAILABLE and analyzer.eeg_ch) else \
-                                "Rule-based spectral analysis"
-                st.write(f"**Sleep Staging:** {staging_method}")
-        
-        st.markdown("---")
-        
-        # --------------------------------------------------------------
-        # EXPORT OPTIONS
-        # --------------------------------------------------------------
-        st.markdown("### 📤 Export & Download Options")
-        
-        export_col1, export_col2, export_col3 = st.columns(3)
-        
-        with export_col1:
-            # PDF Report
-            st.markdown("#### 📄 PDF Report")
-            
-            col_pdf1, col_pdf2 = st.columns(2)
-            with col_pdf1:
-                proof_mode = st.selectbox(
-                    "Proof plots",
-                    ["None", "Overlay (Azarbarzin-style)", "Full (all events)"],
-                    index=1,
-                    key="proof_select"
+            if len(results['events']) > 0:
+                ci_str = f"[{results['ci'][0]:.1f}–{results['ci'][1]:.1f}]"
+                st.metric(
+                    "Obstructive HB",
+                    f"{results['total_hb']:.1f}",
+                    help=f"Event-specific Hypoxic Burden. 95% CI: {ci_str}"
                 )
-            with col_pdf2:
-                include_stages = st.checkbox("Include stages", value=True, key="stages_check")
-            
-            if st.button("📥 Generate PDF Report", type="primary", use_container_width=True):
-                with st.spinner("Generating PDF report..."):
-                    pdf_generator = PDFReportGenerator()
-                    buffer = pdf_generator.generate_report(
-                        filename=edf_file.name,
-                        results=results,
-                        proof_mode=proof_mode,
-                        include_stages=include_stages
-                    )
-                    
-                    st.download_button(
-                        label="⬇️ Download PDF",
-                        data=buffer.getvalue(),
-                        file_name=f"HB_Report_{edf_file.name.replace('.edf', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-                        mime="application/pdf",
-                        type="primary",
-                        use_container_width=True
-                    )
+                st.caption(f"95% CI: {ci_str}")
+            else:
+                st.metric("Obstructive HB", "0.0")
         
-        with export_col2:
-            # CSV Export
-            st.markdown("#### 📊 Data Export")
+        # Risk level
+        risk_level = "Low"
+        if results['total_hb'] >= 88:
+            risk_level = "Very High"
+            risk_color = "🔴"
+        elif results['total_hb'] >= 53:
+            risk_level = "High"
+            risk_color = "🟠"
+        elif results['total_hb'] >= 20:
+            risk_level = "Moderate"
+            risk_color = "🟡"
+        else:
+            risk_color = "🟢"
+        
+        st.markdown(f"### {risk_color} Risk Level: **{risk_level}**")
+        
+        # Global HB (if calculated)
+        if results.get('global_hb') is not None:
+            st.markdown("---")
+            st.subheader("🌍 Global Hypoxic Burden")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric(
+                    "Global HB",
+                    f"{results['global_hb']:.2f} (%min)/h",
+                    help="Total oxygen debt over entire sleep study"
+                )
+            with col2:
+                st.metric(
+                    "Baseline SpO₂",
+                    f"{results['baseline_used']:.1f}%",
+                    help="SpO₂ baseline used for calculation"
+                )
+        
+        # Stage-specific results
+        if results['stage_hb']:
+            st.markdown("---")
+            st.subheader("😴 Stage-Specific Metrics")
             
-            if results['stage_hb']:
-                # Prepare CSV data
-                csv_data = []
-                for stage, data in results['stage_hb'].items():
-                    csv_data.append({
+            stage_data = []
+            for stage in ['W', 'N1', 'N2', 'N3', 'REM']:
+                if stage in results['stage_hb']:
+                    data = results['stage_hb'][stage]
+                    stage_data.append({
                         'Stage': stage,
-                        'Duration_hours': data['hrs'],
-                        'AHI': data['AHI'],
-                        'ODI': data['ODI'],
-                        'Hypoxic_Burden': data['HB']
+                        'Time (h)': f"{data['hrs']:.1f}",
+                        'AHI': f"{data['AHI']:.1f}",
+                        'ODI': f"{data['ODI']:.1f}",
+                        'HB': f"{data['HB']:.2f}"
                     })
-                
-                df_csv = pd.DataFrame(csv_data)
-                csv_string = df_csv.to_csv(index=False)
+            
+            if stage_data:
+                import pandas as pd
+                st.dataframe(pd.DataFrame(stage_data), use_container_width=True)
+        
+        # Report generation
+        st.markdown("---")
+        st.subheader("📄 Generate Report")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            proof_mode = st.selectbox(
+                "Include proof plots",
+                ["None", "Overlay (Azarbarzin-style)", "Full (all events)"],
+                index=1
+            )
+        with col2:
+            include_stages = st.checkbox("Include stage-specific results", value=True)
+        
+        if st.button("📥 Download PDF Report", type="primary", use_container_width=True):
+            with st.spinner("Generating PDF report..."):
+                pdf_generator = PDFReportGenerator()
+                buffer = pdf_generator.generate_report(
+                    filename=edf_file.name,
+                    results=results,
+                    proof_mode=proof_mode,
+                    include_stages=include_stages
+                )
                 
                 st.download_button(
-                    label="📊 Download Stage Data (CSV)",
-                    data=csv_string,
-                    file_name=f"stage_data_{edf_file.name.replace('.edf', '')}_{datetime.now().strftime('%Y%m%d')}.csv",
-                    mime="text/csv",
+                    label="⬇️ Download Report",
+                    data=buffer.getvalue(),
+                    file_name=f"HB_Report_{edf_file.name.replace('.edf', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                    mime="application/pdf",
+                    type="primary",
                     use_container_width=True
                 )
-            else:
-                st.info("No stage data available")
-        
-        with export_col3:
-            # JSON Export
-            st.markdown("#### 🔬 Raw Data")
-            
-            # Prepare JSON (convert numpy types to native Python)
-            json_results = {
-                'filename': edf_file.name,
-                'analysis_date': datetime.now().isoformat(),
-                'duration_hours': float(results['duration']),
-                'ahi': float(results['ahi']),
-                'odi': float(results['odi']),
-                'obstructive_hb': float(results['total_hb']),
-                'ci_lower': float(results['ci'][0]),
-                'ci_upper': float(results['ci'][1]),
-                'risk_level': risk,
-                'stage_specific': {k: {kk: float(vv) for kk, vv in v.items()} 
-                                  for k, v in results['stage_hb'].items()} if results['stage_hb'] else {}
-            }
-            
-            if results.get('global_hb') is not None:
-                json_results['global_hb'] = float(results['global_hb'])
-                json_results['baseline_spo2'] = float(results['baseline_used'])
-            
-            json_string = json.dumps(json_results, indent=2)
-            
-            st.download_button(
-                label="🔬 Download Raw Data (JSON)",
-                data=json_string,
-                file_name=f"analysis_{edf_file.name.replace('.edf', '')}_{datetime.now().strftime('%Y%m%d')}.json",
-                mime="application/json",
-                use_container_width=True
-            )
         
         # Reset button
-        st.markdown("---")
         if st.button("🔄 Analyze Another File", use_container_width=True):
             st.session_state.analyzed = False
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
             st.rerun()
 
-# --------------------------------------------------------------
-# BATCH MODE
-# --------------------------------------------------------------
+# =============================================
+# BATCH ANALYSIS MODE
+# =============================================
 st.markdown("---")
 st.markdown("### 📦 Batch Mode: Analyze Multiple Files")
-
-st.info("📝 **Note:** Batch mode uses the same analysis pipeline as single file mode. "
-        "For >5 files or >1 GB total, run locally for best performance.")
 
 batch_files = st.file_uploader(
     "Upload multiple PSG EDF files",
     type=["edf"],
     accept_multiple_files=True,
     key="batch_upload",
-    help="⚠️ Online: ≤5 files, ≤1 GB total. For larger batches, run locally."
+    help="Online: ≤5 files, ≤1 GB total. For larger batches, run locally."
 )
 
 if batch_files:
     n_files = len(batch_files)
     total_size_gb = sum(f.size for f in batch_files) / 1e9
     
-    # Size check
+    # Check limits
     if n_files > 5 or total_size_gb > 1.0:
-        st.error("**⚠️ BATCH TOO LARGE FOR ONLINE USE**")
-        st.markdown("""
-        **This batch requires local deployment:**
-        - **>5 files** or **>1 GB** → too slow for cloud
-        - **Solution**: Run locally (supports up to 50 files, 4 GB total)
+        st.error("⚠️ **Batch Too Large for Online Use**")
+        st.markdown(f"""
+        Your batch has **{n_files} files** ({total_size_gb:.2f} GB total).
         
-        See "File too large?" section above for local setup instructions.
+        **Online limits:**
+        - ≤5 files
+        - ≤1 GB total size
+        
+        **Solution:** Run the app locally (see instructions above) to process larger batches.
         """)
         st.stop()
     
-    st.success(f"✅ {n_files} files uploaded ({total_size_gb:.2f} GB total)")
-    
     # Batch settings
-    with st.expander("📋 Batch Report Options", expanded=True):
+    with st.expander("⚙️ Batch Settings", expanded=True):
         col1, col2 = st.columns(2)
         
         with col1:
+            batch_include_stages = st.checkbox("Stage-specific results", value=True, key="batch_stages")
             batch_proof_mode = st.selectbox(
                 "Proof plots",
-                ["None", "Overlay (Azarbarzin-style)", "Full (all events)"],
+                ["None", "Overlay (Azarbarzin-style)", "Full"],
                 index=1,
                 key="batch_proof"
-            )
-            batch_include_stages = st.checkbox(
-                "Include stage-specific results",
-                value=True,
-                key="batch_stages"
             )
         
         with col2:
@@ -791,7 +548,8 @@ if batch_files:
             batch_use_global_hb = st.checkbox(
                 "Calculate Global HB",
                 value=True,
-                key="batch_global_hb"
+                key="batch_global_hb",
+                help="Calculate global hypoxic burden for each file"
             )
     
     # Initialize batch session state
@@ -803,33 +561,72 @@ if batch_files:
                 st.session_state[key] = False
             else:
                 st.session_state[key] = []
-
-    # Batch control - simple start button only
-    start_btn = st.button(
-        "▶️ Run Batch Analysis",
-        type="primary",
-        use_container_width=True,
-        disabled=st.session_state.get('batch_running', False)
-    )
+    
+    # Batch control buttons
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        start_btn = st.button(
+            "▶️ Run Batch",
+            type="primary",
+            disabled=st.session_state.batch_running,
+            use_container_width=True
+        )
+    
+    with col2:
+        pause_btn = st.button(
+            "⏸️ Pause",
+            disabled=not st.session_state.batch_running or st.session_state.batch_paused,
+            use_container_width=True
+        )
+    
+    with col3:
+        stop_btn = st.button(
+            "⏹️ Stop",
+            type="secondary",
+            disabled=not st.session_state.batch_running,
+            use_container_width=True
+        )
+    
+    # Handle button clicks
+    if stop_btn:
+        for key in ['batch_running', 'batch_paused', 'batch_progress', 'batch_results', 'batch_files_processed']:
+            if 'progress' in key or 'processed' in key:
+                st.session_state[key] = 0
+            elif 'running' in key or 'paused' in key:
+                st.session_state[key] = False
+            else:
+                st.session_state[key] = []
+        st.rerun()
+    
+    if pause_btn:
+        st.session_state.batch_paused = True
+        st.session_state.batch_running = False
+        st.rerun()
+    
+    if st.session_state.batch_paused:
+        if st.button("▶️ Resume Batch", type="primary", use_container_width=True):
+            st.session_state.batch_running = True
+            st.session_state.batch_paused = False
+            st.rerun()
     
     # Progress indicators
-    if 'batch_progress' not in st.session_state:
-        st.session_state.batch_progress = 0
-    if 'batch_results' not in st.session_state:
-        st.session_state.batch_results = []
-    
-    progress_bar = st.progress(0)
+    progress_bar = st.progress(st.session_state.batch_progress)
     status_text = st.empty()
     
     # Run batch processing
-    if start_btn:
+    if start_btn or (st.session_state.batch_running and not st.session_state.batch_paused):
         st.session_state.batch_running = True
-        st.session_state.batch_results = []
+        start_idx = st.session_state.batch_files_processed
         batch_summary_data = []
         
         desat_thresh_val = 3 if "3%" in batch_desat_threshold else 4
         
-        for idx, current_file in enumerate(batch_files):
+        for idx in range(start_idx, n_files):
+            if not st.session_state.batch_running:
+                break
+            
+            current_file = batch_files[idx]
             status_text.text(f"📂 Processing {current_file.name} ({idx+1}/{n_files})...")
             progress_bar.progress((idx + 0.1) / n_files)
             
@@ -841,24 +638,9 @@ if batch_files:
                     st.warning(f"⚠️ Skipping {current_file.name}: Could not load file")
                     continue
                 
-                # Validate file before analysis
-                if raw.times[-1] == 0:
-                    st.warning(f"⚠️ Skipping {current_file.name}: File has no duration")
-                    if os.path.exists(temp_path):
-                        os.remove(temp_path)
-                    continue
-                
                 # Run analysis
                 analyzer = PSGAnalyzer(raw, temp_path)
                 
-                # Check for SpO2 channel
-                if not analyzer.spo2_ch:
-                    st.warning(f"⚠️ Skipping {current_file.name}: No SpO₂ channel found")
-                    if os.path.exists(temp_path):
-                        os.remove(temp_path)
-                    continue
-                
-                # Run analysis
                 results = analyzer.run_full_analysis(
                     pre_event_sec=100,
                     desat_start_sec=60,
@@ -903,84 +685,70 @@ if batch_files:
                 
             except Exception as e:
                 st.error(f"❌ Error processing {current_file.name}: {str(e)}")
-                if 'temp_path' in locals() and os.path.exists(temp_path):
-                    os.remove(temp_path)
                 continue
             
             # Update progress
+            st.session_state.batch_files_processed = idx + 1
             progress_bar.progress((idx + 1) / n_files)
         
         # Generate master summary and ZIP
-        if st.session_state.batch_results:
-            status_text.text("📊 Generating master summary and ZIP archive...")
-            
-            pdf_generator = PDFReportGenerator()
-            master_buffer = pdf_generator.generate_batch_summary(batch_summary_data)
-            
-            # Create ZIP file
-            zip_buffer = io.BytesIO()
-            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-                # Add individual reports
-                for filename, pdf_buffer in st.session_state.batch_results:
-                    zf.writestr(
-                        f"Reports/HB_Report_{filename.replace('.edf', '')}.pdf",
-                        pdf_buffer.getvalue()
-                    )
-                
-                # Add master summary
-                zf.writestr("Master_Summary.pdf", master_buffer.getvalue())
-            
-            zip_buffer.seek(0)
-            
-            # Success message
-            progress_bar.progress(1.0)
-            status_text.text("✅ Batch processing complete!")
-            st.success(f"🎉 **Batch Complete!** Successfully processed {len(st.session_state.batch_results)}/{n_files} files.")
-            
-            # Download ZIP
-            st.download_button(
-                label="📥 Download All Reports (ZIP)",
-                data=zip_buffer.getvalue(),
-                file_name=f"HB_Batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-                mime="application/zip",
-                type="primary",
-                use_container_width=True
-            )
-        else:
-            st.error("❌ No files were successfully processed.")
+        status_text.text("📊 Generating master summary...")
         
-        st.session_state.batch_running = False
-       
+        pdf_generator = PDFReportGenerator()
+        master_buffer = pdf_generator.generate_batch_summary(batch_summary_data)
+        
+        # Create ZIP file
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+            # Add individual reports
+            for filename, pdf_buffer in st.session_state.batch_results:
+                zf.writestr(
+                    f"Reports/HB_Report_{filename.replace('.edf', '')}.pdf",
+                    pdf_buffer.getvalue()
+                )
+            
+            # Add master summary
+            zf.writestr("Master_Summary.pdf", master_buffer.getvalue())
+        
+        zip_buffer.seek(0)
+        
+        # Success message
+        progress_bar.progress(1.0)
+        status_text.text("✅ Batch processing complete!")
+        st.success(f"**Batch Complete!** Generated {len(st.session_state.batch_results)} reports.")
+        
+        # Download button
+        st.download_button(
+            label=f"⬇️ Download All Reports ({len(st.session_state.batch_results)} files)",
+            data=zip_buffer.getvalue(),
+            file_name=f"HB_Batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+            mime="application/zip",
+            type="primary",
+            use_container_width=True
+        )
+        
         # Reset batch state
-        if st.button("🔄 Process Another Batch", use_container_width=True):
-            for key in ['batch_running', 'batch_paused', 'batch_progress', 'batch_files_processed']:
-                if 'progress' in key or 'processed' in key:
-                    st.session_state[key] = 0
-                else:
-                    st.session_state[key] = False
-            st.session_state.batch_results = []
-            st.rerun()
+        for key in ['batch_running', 'batch_paused', 'batch_progress', 'batch_files_processed']:
+            if 'progress' in key or 'processed' in key:
+                st.session_state[key] = 0
+            else:
+                st.session_state[key] = False
+        
+        st.session_state.batch_results = []
 
 # --------------------------------------------------------------
 # FOOTER
 # --------------------------------------------------------------
 st.markdown("---")
-st.markdown("### 📚 About & Resources")
-
-footer_col1, footer_col2, footer_col3 = st.columns(3)
-
-with footer_col1:
-    st.markdown("**Citation:**")
-    st.caption("Azarbarzin A, et al. *Eur Heart J* 2019;40:1149-1157")
-
-with footer_col2:
-    st.markdown("**Status:**")
-    yasa_status = "✅ YASA Available" if YASA_AVAILABLE else "ℹ️ Rule-based staging"
-    st.caption(yasa_status)
-
-with footer_col3:
-    st.markdown("**Links:**")
-    st.caption("[GitHub](https://github.com/Apolloplectic/hypoxic-burden-edf) | "
-              "[DOI: 10.5281/zenodo.17561726](https://doi.org/10.5281/zenodo.17561726)")
-
-st.caption("Built with Streamlit + MNE + YASA + WFDB")
+st.markdown("""
+<div style='text-align: center; color: #666;'>
+    <p><strong>Hypoxic Burden Calculator</strong> — Open Source Sleep Apnea Analysis</p>
+    <p>
+        🐙 <a href="https://github.com/Apolloplectic/hypoxic-burden-edf">GitHub</a> • 
+        📄 <a href="https://doi.org/10.5281/zenodo.17561726">DOI: 10.5281/zenodo.17561726</a> • 
+        📧 <a href="mailto:sam.johnson9797@gmail.com">Contact</a>
+    </p>
+    <p><small>Built with Streamlit • MNE • {yasa_status} • WFDB</small></p>
+    <p><small>Cite: Azarbarzin A, et al. <em>Eur Heart J</em> 2019;40:1149-1157</small></p>
+</div>
+""".format(yasa_status="YASA ✅" if YASA_AVAILABLE else "YASA ❌"), unsafe_allow_html=True)
