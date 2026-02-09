@@ -20,6 +20,7 @@ from pdf_generator import PDFReportGenerator
 from utils import initialize_session_state, load_edf_file
 from config import YASA_AVAILABLE
 from validation import PSGValidator, check_zero_events, check_unrealistic_hb
+from persistence import save_analysis_to_session, display_analysis_history, compare_with_previous, display_comparison
 
 # --------------------------------------------------------------
 # PAGE CONFIGURATION
@@ -94,6 +95,11 @@ with st.expander("📥 File too large? Run locally (2 GB+ support) — no coding
 # INITIALIZE SESSION STATE
 # --------------------------------------------------------------
 initialize_session_state()
+
+# --------------------------------------------------------------
+# DISPLAY ANALYSIS HISTORY IN SIDEBAR (Feature #6)
+# --------------------------------------------------------------
+display_analysis_history()
 
 # --------------------------------------------------------------
 # SETTING PRESETS
@@ -191,6 +197,54 @@ if edf_file is not None:
     st.write(f"**Airflow:** `{analyzer.flow_ch or 'Not found (will use SpO₂-based detection)'}`")
     st.write(f"**EEG:** `{analyzer.eeg_ch or 'Not found (staging limited)'}`")
     
+    # --------------------------------------------------------------
+    # MANUAL CHANNEL SELECTION (Feature #8)
+    # --------------------------------------------------------------
+    if not analyzer.spo2_ch or not analyzer.flow_ch or not analyzer.eeg_ch:
+        with st.expander("🔧 Manual Channel Selection", expanded=not analyzer.spo2_ch):
+            st.markdown("**Auto-detection failed for some channels. Select manually:**")
+            
+            all_channels = raw.ch_names
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                if not analyzer.spo2_ch:
+                    manual_spo2 = st.selectbox(
+                        "SpO₂ Channel",
+                        ["None"] + all_channels,
+                        help="Required for analysis"
+                    )
+                    if manual_spo2 != "None":
+                        analyzer.spo2_ch = manual_spo2
+                        st.success(f"✅ Set to: {manual_spo2}")
+            
+            with col2:
+                if not analyzer.flow_ch:
+                    manual_flow = st.selectbox(
+                        "Airflow Channel (optional)",
+                        ["None"] + all_channels,
+                        help="Improves event detection accuracy"
+                    )
+                    if manual_flow != "None":
+                        analyzer.flow_ch = manual_flow
+                        st.success(f"✅ Set to: {manual_flow}")
+            
+            with col3:
+                if not analyzer.eeg_ch:
+                    manual_eeg = st.selectbox(
+                        "EEG Channel (optional)",
+                        ["None"] + all_channels,
+                        help="Enables sleep staging"
+                    )
+                    if manual_eeg != "None":
+                        analyzer.eeg_ch = manual_eeg
+                        st.success(f"✅ Set to: {manual_eeg}")
+            
+            st.info("💡 **Common alternate names:**\n"
+                   "- SpO₂: 'Oxygen', 'O2', 'SAT', 'SpO2'\n"
+                   "- Airflow: 'Flow', 'Nasal', 'Cannula', 'Pressure'\n"
+                   "- EEG: 'C3', 'C4', 'F3', 'F4', 'EEG1', 'EEG2'")
+    
     if not analyzer.spo2_ch:
         st.error("❌ SpO₂ channel is required for analysis.")
         st.stop()
@@ -208,6 +262,31 @@ if edf_file is not None:
     else:
         st.info("ℹ️ No MIT annotations found — using automated detection")
         st.session_state.use_mit_st = False
+    
+    # --------------------------------------------------------------
+    # PRESET COMPARISON TOOL (Feature #1)
+    # --------------------------------------------------------------
+    st.markdown("---")
+    run_comparison = st.checkbox(
+        "🔬 Compare Multiple Presets",
+        value=False,
+        help="Run analysis with multiple presets to see how methodology affects results"
+    )
+    
+    if run_comparison:
+        st.info("**Preset Comparison Mode:** Select presets to compare below. Analysis will run for each selected preset.")
+        
+        comparison_presets = st.multiselect(
+            "Select presets to compare:",
+            [p for p in PRESETS.keys() if p != "Custom"],
+            default=["Azarbarzin 2019 (Default)", "AASM 2023 Standard"],
+            help="Choose 2-4 presets to compare"
+        )
+        
+        if len(comparison_presets) < 2:
+            st.warning("⚠️ Please select at least 2 presets to compare")
+        elif len(comparison_presets) > 4:
+            st.warning("⚠️ Maximum 4 presets for comparison (performance)")
     
     # --------------------------------------------------------------
     # ADVANCED SETTINGS WITH PRESETS
@@ -364,26 +443,152 @@ if edf_file is not None:
     st.markdown("---")
     
     if not st.session_state.analyzed:
-        if st.button("🚀 Analyze File", type="primary", use_container_width=True):
+        analyze_label = "🔬 Compare Presets" if run_comparison else "🚀 Analyze File"
+        if st.button(analyze_label, type="primary", use_container_width=True):
             st.session_state.analyzed = True
+            st.session_state.run_comparison = run_comparison
+            if run_comparison:
+                st.session_state.comparison_presets = comparison_presets
             st.rerun()
     else:
-        # Run analysis
-        with st.spinner("🔬 Analyzing PSG data..."):
-            results = analyzer.run_full_analysis(
-                pre_event_sec=pre_event_sec,
-                desat_start_sec=desat_start_sec,
-                desat_end_sec=desat_end_sec,
-                artifact_filter=artifact_filter,
-                desat_threshold=desat_threshold,
-                use_global_hb=use_global_hb,
-                preset_baseline=preset_baseline,
-                use_mit_st=st.session_state.use_mit_st
-            )
+        # --------------------------------------------------------------
+        # PRESET COMPARISON MODE (Feature #1)
+        # --------------------------------------------------------------
+        if st.session_state.get('run_comparison') and len(st.session_state.get('comparison_presets', [])) >= 2:
+            st.markdown("---")
+            st.subheader("🔬 Preset Comparison Results")
+            
+            comparison_results = {}
+            
+            with st.spinner("Running analysis with multiple presets..."):
+                progress_bar = st.progress(0)
+                
+                for idx, preset_name in enumerate(st.session_state.comparison_presets):
+                    status = st.empty()
+                    status.text(f"Analyzing with {preset_name}... ({idx+1}/{len(st.session_state.comparison_presets)})")
+                    
+                    preset_params = PRESETS[preset_name]
+                    
+                    results = analyzer.run_full_analysis(
+                        pre_event_sec=preset_params['pre_event_sec'],
+                        desat_start_sec=preset_params['desat_start_sec'],
+                        desat_end_sec=preset_params['desat_end_sec'],
+                        artifact_filter=preset_params['artifact_filter'],
+                        desat_threshold=preset_params['desat_threshold'],
+                        use_global_hb=preset_params['use_global_hb'],
+                        preset_baseline=preset_params['preset_baseline'],
+                        use_mit_st=st.session_state.use_mit_st
+                    )
+                    
+                    comparison_results[preset_name] = results
+                    progress_bar.progress((idx + 1) / len(st.session_state.comparison_presets))
+                
+                status.empty()
+                progress_bar.empty()
+            
+            # Display comparison table
+            st.markdown("#### 📊 Comparison Table")
+            
+            comparison_data = []
+            for preset_name, results in comparison_results.items():
+                comparison_data.append({
+                    'Preset': preset_name,
+                    'AHI': f"{results['ahi']:.1f}",
+                    'ODI': f"{results['odi']:.1f}",
+                    'Obstructive HB': f"{results['total_hb']:.1f}",
+                    'CI Lower': f"{results['ci'][0]:.1f}",
+                    'CI Upper': f"{results['ci'][1]:.1f}",
+                    'Risk': 'Low' if results['total_hb'] < 20 else 'Moderate' if results['total_hb'] < 53 else 'High' if results['total_hb'] < 88 else 'Very High'
+                })
+            
+            df_comparison = pd.DataFrame(comparison_data)
+            st.dataframe(df_comparison, use_container_width=True, hide_index=True)
+            
+            # Visualization
+            st.markdown("#### 📈 Visual Comparison")
+            
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+            
+            presets = [d['Preset'] for d in comparison_data]
+            ahis = [float(d['AHI']) for d in comparison_data]
+            hbs = [float(d['Obstructive HB']) for d in comparison_data]
+            
+            # AHI comparison
+            colors = ['#4472C4', '#ED7D31', '#A5A5A5', '#FFC000']
+            ax1.bar(range(len(presets)), ahis, color=colors[:len(presets)])
+            ax1.set_xticks(range(len(presets)))
+            ax1.set_xticklabels([p.split('(')[0].strip() for p in presets], rotation=15, ha='right')
+            ax1.set_ylabel('AHI (events/hour)')
+            ax1.set_title('AHI by Preset')
+            ax1.grid(axis='y', alpha=0.3)
+            
+            # HB comparison
+            ax2.bar(range(len(presets)), hbs, color=colors[:len(presets)])
+            ax2.set_xticks(range(len(presets)))
+            ax2.set_xticklabels([p.split('(')[0].strip() for p in presets], rotation=15, ha='right')
+            ax2.set_ylabel('Hypoxic Burden (%min/h)')
+            ax2.set_title('Obstructive HB by Preset')
+            ax2.grid(axis='y', alpha=0.3)
+            
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+            
+            # Key insights
+            st.markdown("#### 💡 Key Insights")
+            
+            ahi_range = max(ahis) - min(ahis)
+            hb_range = max(hbs) - min(hbs)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("AHI Range", f"{ahi_range:.1f}", help="Difference between highest and lowest AHI")
+            with col2:
+                st.metric("HB Range", f"{hb_range:.1f}", help="Difference between highest and lowest HB")
+            
+            if ahi_range > 5:
+                st.warning(f"⚠️ **Wide AHI variation ({ahi_range:.1f} events/hr)** - Methodology significantly affects event detection. "
+                          "Conservative preset may undercount, Aggressive may overcount.")
+            else:
+                st.success(f"✅ **Consistent AHI across presets ({ahi_range:.1f} range)** - Results are robust to methodology changes.")
+            
+            # Use first preset results for detailed display below
+            results = list(comparison_results.values())[0]
+            params = PRESETS[list(comparison_results.keys())[0]]
+            
+            st.markdown("---")
+            st.markdown("### 📊 Detailed Results (First Preset)")
+        else:
+            # Regular single analysis
+            # Run analysis
+            with st.spinner("🔬 Analyzing PSG data..."):
+                results = analyzer.run_full_analysis(
+                    pre_event_sec=pre_event_sec,
+                    desat_start_sec=desat_start_sec,
+                    desat_end_sec=desat_end_sec,
+                    artifact_filter=artifact_filter,
+                    desat_threshold=desat_threshold,
+                    use_global_hb=use_global_hb,
+                    preset_baseline=preset_baseline,
+                    use_mit_st=st.session_state.use_mit_st
+                )
+        
+        # --------------------------------------------------------------
+        # SAVE TO SESSION HISTORY (Feature #6)
+        # --------------------------------------------------------------
+        save_analysis_to_session(edf_file.name, results, params)
         
         # Display results
         st.markdown("---")
         st.subheader("📊 Analysis Results")
+        
+        # --------------------------------------------------------------
+        # COMPARISON WITH PREVIOUS (Feature #6)
+        # --------------------------------------------------------------
+        previous_analysis = compare_with_previous()
+        if previous_analysis:
+            display_comparison(results, previous_analysis)
+            st.markdown("---")
         
         # Main metrics
         col1, col2, col3 = st.columns(3)
@@ -501,6 +706,144 @@ if edf_file is not None:
                     data=buffer.getvalue(),
                     file_name=f"HB_Report_{edf_file.name.replace('.edf', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
                     mime="application/pdf",
+                    type="primary",
+                    use_container_width=True
+                )
+        
+        # --------------------------------------------------------------
+        # EXCEL EXPORT (Feature #9)
+        # --------------------------------------------------------------
+        st.markdown("---")
+        st.markdown("#### 📊 Excel Export (Multi-Sheet)")
+        
+        if st.button("📥 Generate Excel Report", use_container_width=True):
+            with st.spinner("Generating Excel workbook..."):
+                from openpyxl import Workbook
+                from openpyxl.styles import Font, PatternFill, Alignment
+                from openpyxl.utils.dataframe import dataframe_to_rows
+                
+                wb = Workbook()
+                
+                # Sheet 1: Summary
+                ws_summary = wb.active
+                ws_summary.title = "Summary"
+                
+                # Header styling
+                header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+                header_font = Font(bold=True, color="FFFFFF")
+                
+                # Summary data
+                ws_summary['A1'] = "Hypoxic Burden Analysis Report"
+                ws_summary['A1'].font = Font(bold=True, size=14)
+                ws_summary['A3'] = "File"
+                ws_summary['B3'] = edf_file.name
+                ws_summary['A4'] = "Analysis Date"
+                ws_summary['B4'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                ws_summary['A5'] = "Duration (hours)"
+                ws_summary['B5'] = results['duration']
+                
+                ws_summary['A7'] = "Metric"
+                ws_summary['B7'] = "Value"
+                ws_summary['C7'] = "95% CI"
+                ws_summary['A7'].fill = header_fill
+                ws_summary['B7'].fill = header_fill
+                ws_summary['C7'].fill = header_fill
+                ws_summary['A7'].font = header_font
+                ws_summary['B7'].font = header_font
+                ws_summary['C7'].font = header_font
+                
+                ws_summary['A8'] = "AHI"
+                ws_summary['B8'] = results['ahi']
+                ws_summary['A9'] = "ODI"
+                ws_summary['B9'] = results['odi']
+                ws_summary['A10'] = "Obstructive HB"
+                ws_summary['B10'] = results['total_hb']
+                ws_summary['C10'] = f"[{results['ci'][0]:.1f} - {results['ci'][1]:.1f}]"
+                
+                if results.get('global_hb'):
+                    ws_summary['A11'] = "Global HB"
+                    ws_summary['B11'] = results['global_hb']
+                    ws_summary['A12'] = "Baseline SpO₂"
+                    ws_summary['B12'] = results['baseline_used']
+                
+                # Auto-adjust column widths
+                ws_summary.column_dimensions['A'].width = 25
+                ws_summary.column_dimensions['B'].width = 15
+                ws_summary.column_dimensions['C'].width = 20
+                
+                # Sheet 2: Stage-Specific Results
+                if results['stage_hb']:
+                    ws_stages = wb.create_sheet("Stage-Specific")
+                    
+                    stage_data = []
+                    for stage in ['W', 'N1', 'N2', 'N3', 'REM']:
+                        if stage in results['stage_hb']:
+                            data = results['stage_hb'][stage]
+                            stage_data.append({
+                                'Stage': stage,
+                                'Time (h)': data['hrs'],
+                                'AHI': data['AHI'],
+                                'ODI': data['ODI'],
+                                'HB': data['HB']
+                            })
+                    
+                    df_stages = pd.DataFrame(stage_data)
+                    
+                    # Add header
+                    for r_idx, row in enumerate(dataframe_to_rows(df_stages, index=False, header=True), 1):
+                        for c_idx, value in enumerate(row, 1):
+                            cell = ws_stages.cell(row=r_idx, column=c_idx, value=value)
+                            if r_idx == 1:  # Header row
+                                cell.fill = header_fill
+                                cell.font = header_font
+                    
+                    # Auto-adjust columns
+                    for column in ws_stages.columns:
+                        max_length = 0
+                        column_letter = column[0].column_letter
+                        for cell in column:
+                            if cell.value:
+                                max_length = max(max_length, len(str(cell.value)))
+                        ws_stages.column_dimensions[column_letter].width = max_length + 2
+                
+                # Sheet 3: Analysis Parameters
+                ws_params = wb.create_sheet("Parameters")
+                ws_params['A1'] = "Analysis Parameters"
+                ws_params['A1'].font = Font(bold=True, size=14)
+                
+                ws_params['A3'] = "Parameter"
+                ws_params['B3'] = "Value"
+                ws_params['A3'].fill = header_fill
+                ws_params['B3'].fill = header_fill
+                ws_params['A3'].font = header_font
+                ws_params['B3'].font = header_font
+                
+                params_list = [
+                    ("Pre-event baseline (s)", params['pre_event_sec']),
+                    ("Desat start (s)", params['desat_start_sec']),
+                    ("Desat end (s)", params['desat_end_sec']),
+                    ("Desat threshold (%)", params['desat_threshold']),
+                    ("Artifact filter", params['artifact_filter']),
+                    ("Global HB enabled", "Yes" if params['use_global_hb'] else "No")
+                ]
+                
+                for idx, (param, value) in enumerate(params_list, 4):
+                    ws_params[f'A{idx}'] = param
+                    ws_params[f'B{idx}'] = value
+                
+                ws_params.column_dimensions['A'].width = 25
+                ws_params.column_dimensions['B'].width = 15
+                
+                # Save to buffer
+                excel_buffer = io.BytesIO()
+                wb.save(excel_buffer)
+                excel_buffer.seek(0)
+                
+                st.download_button(
+                    label="⬇️ Download Excel Report",
+                    data=excel_buffer.getvalue(),
+                    file_name=f"HB_Analysis_{edf_file.name.replace('.edf', '')}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     type="primary",
                     use_container_width=True
                 )
