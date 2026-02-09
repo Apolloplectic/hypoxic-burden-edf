@@ -9,6 +9,9 @@ GitHub: https://github.com/Apolloplectic/hypoxic-burden-edf
 """
 
 import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
 import os
 from datetime import datetime
 import io
