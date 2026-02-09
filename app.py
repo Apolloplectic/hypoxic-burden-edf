@@ -555,6 +555,183 @@ if edf_file is not None:
             else:
                 st.success(f"✅ **Consistent AHI across presets ({ahi_range:.1f} range)** - Results are robust to methodology changes.")
             
+            # --------------------------------------------------------------
+            # EXCEL EXPORT FOR COMPARISON (Feature #9 Enhancement)
+            # --------------------------------------------------------------
+            st.markdown("---")
+            st.markdown("#### 📊 Export Comparison")
+            
+            if st.button("📥 Download Comparison as Excel", use_container_width=True):
+                with st.spinner("Generating comparison Excel workbook..."):
+                    from openpyxl import Workbook
+                    from openpyxl.styles import Font, PatternFill, Alignment
+                    from openpyxl.utils.dataframe import dataframe_to_rows
+                    
+                    wb = Workbook()
+                    
+                    # Header styling
+                    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+                    header_font = Font(bold=True, color="FFFFFF")
+                    
+                    # Sheet 1: Comparison Summary
+                    ws_summary = wb.active
+                    ws_summary.title = "Comparison Summary"
+                    
+                    ws_summary['A1'] = "Preset Comparison Analysis"
+                    ws_summary['A1'].font = Font(bold=True, size=14)
+                    ws_summary['A2'] = f"File: {edf_file.name}"
+                    ws_summary['A3'] = f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    
+                    # Comparison table
+                    ws_summary['A5'] = "Preset"
+                    ws_summary['B5'] = "AHI"
+                    ws_summary['C5'] = "ODI"
+                    ws_summary['D5'] = "Obstructive HB"
+                    ws_summary['E5'] = "CI Lower"
+                    ws_summary['F5'] = "CI Upper"
+                    ws_summary['G5'] = "Risk Level"
+                    
+                    for col in ['A5', 'B5', 'C5', 'D5', 'E5', 'F5', 'G5']:
+                        ws_summary[col].fill = header_fill
+                        ws_summary[col].font = header_font
+                    
+                    for idx, data in enumerate(comparison_data, 6):
+                        ws_summary[f'A{idx}'] = data['Preset']
+                        ws_summary[f'B{idx}'] = float(data['AHI'])
+                        ws_summary[f'C{idx}'] = float(data['ODI'])
+                        ws_summary[f'D{idx}'] = float(data['Obstructive HB'])
+                        ws_summary[f'E{idx}'] = float(data['CI Lower'])
+                        ws_summary[f'F{idx}'] = float(data['CI Upper'])
+                        ws_summary[f'G{idx}'] = data['Risk']
+                    
+                    # Auto-adjust columns
+                    ws_summary.column_dimensions['A'].width = 30
+                    for col in ['B', 'C', 'D', 'E', 'F']:
+                        ws_summary.column_dimensions[col].width = 15
+                    ws_summary.column_dimensions['G'].width = 15
+                    
+                    # Create a sheet for each preset's detailed results
+                    for preset_name, preset_results in comparison_results.items():
+                        # Shorten sheet name (Excel limit is 31 chars)
+                        sheet_name = preset_name.replace(" (Default)", "").replace(" (High Specificity)", "").replace(" (High Sensitivity)", "")[:31]
+                        ws = wb.create_sheet(sheet_name)
+                        
+                        ws['A1'] = f"{preset_name} - Detailed Results"
+                        ws['A1'].font = Font(bold=True, size=12)
+                        
+                        # Main metrics
+                        ws['A3'] = "Metric"
+                        ws['B3'] = "Value"
+                        ws['A3'].fill = header_fill
+                        ws['B3'].fill = header_fill
+                        ws['A3'].font = header_font
+                        ws['B3'].font = header_font
+                        
+                        ws['A4'] = "Duration (h)"
+                        ws['B4'] = preset_results['duration']
+                        ws['A5'] = "AHI"
+                        ws['B5'] = preset_results['ahi']
+                        ws['A6'] = "ODI"
+                        ws['B6'] = preset_results['odi']
+                        ws['A7'] = "Obstructive HB"
+                        ws['B7'] = preset_results['total_hb']
+                        ws['A8'] = "95% CI Lower"
+                        ws['B8'] = preset_results['ci'][0]
+                        ws['A9'] = "95% CI Upper"
+                        ws['B9'] = preset_results['ci'][1]
+                        
+                        if preset_results.get('global_hb'):
+                            ws['A10'] = "Global HB"
+                            ws['B10'] = preset_results['global_hb']
+                            ws['A11'] = "Baseline SpO₂"
+                            ws['B11'] = preset_results['baseline_used']
+                        
+                        # Stage-specific results if available
+                        if preset_results.get('stage_hb'):
+                            ws['A13'] = "Stage-Specific Results"
+                            ws['A13'].font = Font(bold=True, size=11)
+                            
+                            ws['A14'] = "Stage"
+                            ws['B14'] = "Time (h)"
+                            ws['C14'] = "AHI"
+                            ws['D14'] = "ODI"
+                            ws['E14'] = "HB"
+                            
+                            for col in ['A14', 'B14', 'C14', 'D14', 'E14']:
+                                ws[col].fill = header_fill
+                                ws[col].font = header_font
+                            
+                            row = 15
+                            for stage in ['W', 'N1', 'N2', 'N3', 'REM']:
+                                if stage in preset_results['stage_hb']:
+                                    data = preset_results['stage_hb'][stage]
+                                    ws[f'A{row}'] = stage
+                                    ws[f'B{row}'] = data['hrs']
+                                    ws[f'C{row}'] = data['AHI']
+                                    ws[f'D{row}'] = data['ODI']
+                                    ws[f'E{row}'] = data['HB']
+                                    row += 1
+                        
+                        # Auto-adjust columns
+                        ws.column_dimensions['A'].width = 20
+                        ws.column_dimensions['B'].width = 15
+                        ws.column_dimensions['C'].width = 12
+                        ws.column_dimensions['D'].width = 12
+                        ws.column_dimensions['E'].width = 12
+                    
+                    # Parameters sheet
+                    ws_params = wb.create_sheet("Parameters Used")
+                    ws_params['A1'] = "Analysis Parameters by Preset"
+                    ws_params['A1'].font = Font(bold=True, size=12)
+                    
+                    ws_params['A3'] = "Parameter"
+                    for idx, preset_name in enumerate(comparison_results.keys(), 2):
+                        col_letter = chr(65 + idx)  # B, C, D, etc.
+                        ws_params[f'{col_letter}3'] = preset_name.split('(')[0].strip()
+                        ws_params[f'{col_letter}3'].fill = header_fill
+                        ws_params[f'{col_letter}3'].font = header_font
+                    
+                    ws_params['A3'].fill = header_fill
+                    ws_params['A3'].font = header_font
+                    
+                    param_names = [
+                        ("Pre-event baseline (s)", 'pre_event_sec'),
+                        ("Desat start (s)", 'desat_start_sec'),
+                        ("Desat end (s)", 'desat_end_sec'),
+                        ("Desat threshold (%)", 'desat_threshold'),
+                        ("Artifact filter", 'artifact_filter'),
+                        ("Global HB enabled", 'use_global_hb')
+                    ]
+                    
+                    for row_idx, (param_name, param_key) in enumerate(param_names, 4):
+                        ws_params[f'A{row_idx}'] = param_name
+                        for col_idx, preset_name in enumerate(comparison_results.keys(), 2):
+                            col_letter = chr(65 + col_idx)
+                            preset_params = PRESETS[preset_name]
+                            value = preset_params[param_key]
+                            if param_key == 'use_global_hb':
+                                value = "Yes" if value else "No"
+                            ws_params[f'{col_letter}{row_idx}'] = value
+                    
+                    ws_params.column_dimensions['A'].width = 25
+                    for col_idx in range(len(comparison_results)):
+                        col_letter = chr(66 + col_idx)
+                        ws_params.column_dimensions[col_letter].width = 20
+                    
+                    # Save to buffer
+                    excel_buffer = io.BytesIO()
+                    wb.save(excel_buffer)
+                    excel_buffer.seek(0)
+                    
+                    st.download_button(
+                        label="⬇️ Download Comparison Excel",
+                        data=excel_buffer.getvalue(),
+                        file_name=f"HB_Comparison_{edf_file.name.replace('.edf', '')}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        type="primary",
+                        use_container_width=True
+                    )
+            
             # Use first preset results for detailed display below
             results = list(comparison_results.values())[0]
             params = PRESETS[list(comparison_results.keys())[0]]
