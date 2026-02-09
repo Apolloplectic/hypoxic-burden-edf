@@ -393,21 +393,25 @@ if edf_file is not None:
         else:
             # Show preset values (read-only)
             st.markdown("#### 📋 Preset Configuration")
+            
+            st.markdown("##### Event-Specific HB Parameters:")
             col1, col2 = st.columns(2)
             
             with col1:
-                st.write(f"**Pre-event baseline:** {params['pre_event_sec']}s")
-                st.write(f"**Desat start:** {params['desat_start_sec']}s before end")
-                st.write(f"**Desat end:** {params['desat_end_sec']}s after end")
+                st.write(f"**Pre-event baseline:** {params['pre_event_sec']}s before START")
+                st.write(f"**Baseline method:** MAXIMUM SpO₂ (per Azarbarzin)")
+                st.write(f"**Desat start offset:** {params['desat_start_sec']}s from START")
             
             with col2:
+                st.write(f"**Desat end:** {params['desat_end_sec']}s after end")
                 st.write(f"**Artifact filter:** {params['artifact_filter']}")
                 st.write(f"**Desat threshold:** {params['desat_threshold']}%")
-                st.write(f"**Global HB:** {'Enabled' if params['use_global_hb'] else 'Disabled'}")
             
-            if params['use_global_hb']:
-                baseline_text = 'Auto (95th percentile)' if params['preset_baseline'] == 0 else f'{params["preset_baseline"]:.1f}%'
-                st.write(f"**Baseline SpO₂:** {baseline_text}")
+            st.markdown("##### Global HB Parameters:")
+            baseline_text = 'Auto (95th percentile)' if params['preset_baseline'] == 0 else f'{params["preset_baseline"]:.1f}%'
+            st.write(f"**Global baseline:** {baseline_text} (for whole-study burden)")
+            st.caption("ℹ️ Note: Event-specific HB uses MAXIMUM in 100s before each event. Global HB uses this baseline for entire study.")
+        
         
         # Store in session state
         st.session_state.analysis_params = params
@@ -416,8 +420,8 @@ if edf_file is not None:
         if preset_choice == "Custom":
             if params['pre_event_sec'] != 100:
                 st.warning(f"⚠️ Pre-event window: {params['pre_event_sec']}s (Azarbarzin default: 100s)")
-            if params['desat_start_sec'] != 60 or params['desat_end_sec'] != 120:
-                st.warning(f"⚠️ Desat window: -{params['desat_start_sec']}s/+{params['desat_end_sec']}s (Azarbarzin: -60s/+120s)")
+            if params['desat_start_sec'] != 0 or params['desat_end_sec'] != 90:
+                st.warning(f"⚠️ Desat window: {params['desat_start_sec']}s from START, {params['desat_end_sec']}s after END (Azarbarzin: 0s, 90s)")
             if params['desat_threshold'] != 3:
                 st.warning("⚠️ Using 4% threshold (non-AASM)")
             if params['artifact_filter'] != "Off":
