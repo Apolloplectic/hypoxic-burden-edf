@@ -59,7 +59,7 @@ st.markdown("### 📁 Upload Mode")
 # Mode selection
 analysis_mode = st.radio(
     "Select Analysis Mode:",
-    ["Single File Analysis", "Treatment Comparison (Before/After)"],
+    ["Single File Analysis", "Treatment Comparison (Before/After) - Broken at the moment"],
     help="Compare pre-treatment vs post-treatment PSG studies"
 )
 
