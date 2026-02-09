@@ -53,8 +53,8 @@ st.markdown("### 📁 Upload Mode")
 # Mode selection
 analysis_mode = st.radio(
     "Select Analysis Mode:",
-    ["Single File Analysis", "Treatment Comparison (Pre-Treatment vs. Treatment)"],
-    help="Compare pre-treatment vs treatment PSG studies"
+    ["Single File Analysis", "Treatment Comparison (Before/After)"],
+    help="Compare pre-treatment vs post-treatment PSG studies"
 )
 
 if analysis_mode == "Single File Analysis":
@@ -84,9 +84,9 @@ else:  # Treatment Comparison mode
         )
     
     with col2:
-        st.markdown("**Treatment**")
+        st.markdown("**Post-Treatment**")
         post_treatment_file = st.file_uploader(
-            "Upload treatment PSG",
+            "Upload post-treatment PSG",
             type=["edf"],
             help="PSG after treatment (CPAP, Inspire, etc.)",
             key="post_treatment_upload"
@@ -1088,7 +1088,7 @@ elif analysis_mode == "Treatment Comparison (Before/After)" and pre_treatment_fi
     with st.spinner("📂 Loading pre-treatment PSG..."):
         raw_pre, temp_path_pre = load_edf_file(pre_treatment_file)
     
-    with st.spinner("📂 Loading treatment PSG..."):
+    with st.spinner("📂 Loading post-treatment PSG..."):
         raw_post, temp_path_post = load_edf_file(post_treatment_file)
     
     if raw_pre is None or raw_post is None:
@@ -1110,7 +1110,7 @@ elif analysis_mode == "Treatment Comparison (Before/After)" and pre_treatment_fi
         validator_pre.display_results(show_info=False)
     
     with col2:
-        st.markdown("#### Treatment")
+        st.markdown("#### Post-Treatment")
         validator_post = PSGValidator(raw_post, analyzer_post)
         validation_post = validator_post.validate_all()
         validator_post.display_results(show_info=False)
@@ -1149,8 +1149,8 @@ elif analysis_mode == "Treatment Comparison (Before/After)" and pre_treatment_fi
                 use_mit_st=st.session_state.use_mit_st
             )
         
-        # Analyze treatment
-        with st.spinner("🔬 Analyzing treatment PSG..."):
+        # Analyze post-treatment
+        with st.spinner("🔬 Analyzing post-treatment PSG..."):
             results_post = analyzer_post.run_full_analysis(
                 pre_event_sec=params['pre_event_sec'],
                 desat_start_sec=params['desat_start_sec'],
@@ -1177,7 +1177,7 @@ elif analysis_mode == "Treatment Comparison (Before/After)" and pre_treatment_fi
                 f"{results_pre['total_hb']:.1f}",
                 f"{results_pre.get('global_hb', 0):.1f}"
             ],
-            'Treatment': [
+            'Post-Treatment': [
                 f"{results_post['ahi']:.1f}",
                 f"{results_post['odi']:.1f}",
                 f"{results_post['total_hb']:.1f}",
@@ -1267,7 +1267,7 @@ elif analysis_mode == "Treatment Comparison (Before/After)" and pre_treatment_fi
         width = 0.35
         
         ax1.bar(x - width/2, pre_values, width, label='Pre-Treatment', color='#e74c3c', alpha=0.8)
-        ax1.bar(x + width/2, post_values, width, label='Treatment', color='#27ae60', alpha=0.8)
+        ax1.bar(x + width/2, post_values, width, label='Post-Treatment', color='#27ae60', alpha=0.8)
         ax1.set_ylabel('Events per hour')
         ax1.set_title('AHI & ODI Comparison')
         ax1.set_xticks(x)
@@ -1283,7 +1283,7 @@ elif analysis_mode == "Treatment Comparison (Before/After)" and pre_treatment_fi
         x2 = np.arange(len(hb_metrics))
         
         ax2.bar(x2 - width/2, hb_pre_values, width, label='Pre-Treatment', color='#e74c3c', alpha=0.8)
-        ax2.bar(x2 + width/2, hb_post_values, width, label='Treatment', color='#27ae60', alpha=0.8)
+        ax2.bar(x2 + width/2, hb_post_values, width, label='Post-Treatment', color='#27ae60', alpha=0.8)
         ax2.set_ylabel('(%·min)/h')
         ax2.set_title('Hypoxic Burden Comparison')
         ax2.set_xticks(x2)
@@ -1298,54 +1298,145 @@ elif analysis_mode == "Treatment Comparison (Before/After)" and pre_treatment_fi
         st.markdown("---")
         st.markdown("### 📥 Export Comparison Report")
         
-        if st.button("📄 Generate PDF Comparison Report"):
-            # Create PDF with both analyses
-            pdf_gen = PDFReportGenerator()
+        # Create comprehensive Excel workbook
+        from io import BytesIO
+        
+        # Prepare data for Excel export
+        excel_buffer = BytesIO()
+        
+        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+            # Sheet 1: Summary Comparison
+            summary_df = pd.DataFrame({
+                'Metric': ['AHI (events/h)', 'ODI (events/h)', 'Event-Specific HB (%·min/h)', 
+                          'Global HB (%·min/h)', 'Duration (hours)', 'Total Events'],
+                'Pre-Treatment': [
+                    results_pre['ahi'],
+                    results_pre['odi'],
+                    results_pre['total_hb'],
+                    results_pre.get('global_hb', 0),
+                    results_pre['duration'],
+                    len(results_pre.get('events', []))
+                ],
+                'Post-Treatment': [
+                    results_post['ahi'],
+                    results_post['odi'],
+                    results_post['total_hb'],
+                    results_post.get('global_hb', 0),
+                    results_post['duration'],
+                    len(results_post.get('events', []))
+                ],
+                'Absolute Change': [
+                    results_post['ahi'] - results_pre['ahi'],
+                    results_post['odi'] - results_pre['odi'],
+                    results_post['total_hb'] - results_pre['total_hb'],
+                    results_post.get('global_hb', 0) - results_pre.get('global_hb', 0),
+                    results_post['duration'] - results_pre['duration'],
+                    len(results_post.get('events', [])) - len(results_pre.get('events', []))
+                ],
+                '% Change': [
+                    ((results_post['ahi'] - results_pre['ahi']) / results_pre['ahi'] * 100) if results_pre['ahi'] > 0 else 0,
+                    ((results_post['odi'] - results_pre['odi']) / results_pre['odi'] * 100) if results_pre['odi'] > 0 else 0,
+                    ((results_post['total_hb'] - results_pre['total_hb']) / results_pre['total_hb'] * 100) if results_pre['total_hb'] > 0 else 0,
+                    ((results_post.get('global_hb', 0) - results_pre.get('global_hb', 0)) / results_pre.get('global_hb', 1) * 100) if results_pre.get('global_hb', 0) > 0 else 0,
+                    0,
+                    0
+                ]
+            })
+            summary_df.to_excel(writer, sheet_name='Summary', index=False)
             
-            # Generate individual reports
-            buffer_pre = pdf_gen.generate_report(
-                filename=pre_treatment_file.name,
-                results=results_pre,
-                params=params,
-                analyzer=analyzer_pre
-            )
+            # Sheet 2: Stage-by-Stage Comparison
+            stage_rows = []
+            for stage in ['REM', 'N3', 'N2', 'N1', 'W']:
+                if stage in results_pre.get('stage_hb', {}) and stage in results_post.get('stage_hb', {}):
+                    pre_stage = results_pre['stage_hb'][stage]
+                    post_stage = results_post['stage_hb'][stage]
+                    
+                    stage_rows.append({
+                        'Stage': stage,
+                        'Pre-Treatment Hours': pre_stage['hrs'],
+                        'Pre-Treatment AHI': pre_stage['AHI'],
+                        'Pre-Treatment ODI': pre_stage['ODI'],
+                        'Pre-Treatment HB': pre_stage['HB'],
+                        'Post-Treatment Hours': post_stage['hrs'],
+                        'Post-Treatment AHI': post_stage['AHI'],
+                        'Post-Treatment ODI': post_stage['ODI'],
+                        'Post-Treatment HB': post_stage['HB'],
+                        'AHI Change': post_stage['AHI'] - pre_stage['AHI'],
+                        'HB Change': post_stage['HB'] - pre_stage['HB'],
+                        'HB % Improvement': ((pre_stage['HB'] - post_stage['HB']) / pre_stage['HB'] * 100) if pre_stage['HB'] > 0 else 0
+                    })
             
-            buffer_post = pdf_gen.generate_report(
-                filename=post_treatment_file.name,
-                results=results_post,
-                params=params,
-                analyzer=analyzer_post
-            )
+            if stage_rows:
+                stage_df = pd.DataFrame(stage_rows)
+                stage_df.to_excel(writer, sheet_name='Stage Comparison', index=False)
             
-            # Create comparison summary page (simplified for now)
-            comparison_summary = f"""
-            TREATMENT COMPARISON SUMMARY
-            ============================
+            # Sheet 3: Pre-Treatment Details
+            pre_details = {
+                'Parameter': ['Filename', 'Duration (hours)', 'AHI', 'ODI', 'Event-Specific HB', 
+                             'Global HB', 'Baseline SpO₂', 'Total Events', '95% CI Lower', '95% CI Upper'],
+                'Value': [
+                    pre_treatment_file.name,
+                    f"{results_pre['duration']:.2f}",
+                    f"{results_pre['ahi']:.1f}",
+                    f"{results_pre['odi']:.1f}",
+                    f"{results_pre['total_hb']:.1f}",
+                    f"{results_pre.get('global_hb', 0):.1f}",
+                    f"{results_pre.get('baseline_used', 'N/A')}",
+                    len(results_pre.get('events', [])),
+                    f"{results_pre.get('ci', (0, 0))[0]:.1f}",
+                    f"{results_pre.get('ci', (0, 0))[1]:.1f}"
+                ]
+            }
+            pd.DataFrame(pre_details).to_excel(writer, sheet_name='Pre-Treatment Details', index=False)
             
-            Pre-Treatment File: {pre_treatment_file.name}
-            Treatment File: {treatment_file.name}
+            # Sheet 4: Post-Treatment Details
+            post_details = {
+                'Parameter': ['Filename', 'Duration (hours)', 'AHI', 'ODI', 'Event-Specific HB', 
+                             'Global HB', 'Baseline SpO₂', 'Total Events', '95% CI Lower', '95% CI Upper'],
+                'Value': [
+                    post_treatment_file.name,
+                    f"{results_post['duration']:.2f}",
+                    f"{results_post['ahi']:.1f}",
+                    f"{results_post['odi']:.1f}",
+                    f"{results_post['total_hb']:.1f}",
+                    f"{results_post.get('global_hb', 0):.1f}",
+                    f"{results_post.get('baseline_used', 'N/A')}",
+                    len(results_post.get('events', [])),
+                    f"{results_post.get('ci', (0, 0))[0]:.1f}",
+                    f"{results_post.get('ci', (0, 0))[1]:.1f}"
+                ]
+            }
+            pd.DataFrame(post_details).to_excel(writer, sheet_name='Post-Treatment Details', index=False)
             
-            PRIMARY OUTCOMES:
-            - AHI: {results_pre['ahi']:.1f} → {results_post['ahi']:.1f} ({ahi_improvement:.1f}% improvement)
-            - Hypoxic Burden: {results_pre['total_hb']:.1f} → {results_post['total_hb']:.1f} ({hb_improvement:.1f}% improvement)
-            - Global HB: {results_pre.get('global_hb', 0):.1f} → {results_post.get('global_hb', 0):.1f}
-            """
-            
-            st.download_button(
-                label="⬇️ Download Pre-Treatment Report",
-                data=buffer_pre,
-                file_name=f"pre_treatment_{pre_treatment_file.name.replace('.edf', '')}_report.pdf",
-                mime="application/pdf"
-            )
-            
-            st.download_button(
-                label="⬇️ Download Treatment Report",
-                data=buffer_post,
-                file_name=f"post_treatment_{post_treatment_file.name.replace('.edf', '')}_report.pdf",
-                mime="application/pdf"
-            )
-            
-            st.text_area("Comparison Summary (copy/paste)", comparison_summary, height=200)
+            # Sheet 5: Clinical Interpretation
+            interpretation_data = {
+                'Assessment': ['Treatment Efficacy', 'AHI Response', 'HB Response', 'Recommended Action'],
+                'Result': [
+                    '✅ Excellent' if (ahi_improvement >= 50 and hb_improvement >= 50) else
+                    '✓ Good' if (ahi_improvement >= 30 and hb_improvement >= 30) else
+                    '⚠️ Partial' if (ahi_improvement >= 10 and hb_improvement >= 10) else
+                    '❌ Poor',
+                    f"{ahi_improvement:.1f}% improvement",
+                    f"{hb_improvement:.1f}% improvement",
+                    'Continue current therapy' if ahi_improvement >= 50 else
+                    'Consider therapy optimization' if ahi_improvement >= 30 else
+                    'Evaluate alternative treatments'
+                ]
+            }
+            pd.DataFrame(interpretation_data).to_excel(writer, sheet_name='Clinical Interpretation', index=False)
+        
+        excel_buffer.seek(0)
+        
+        # Download button for comprehensive Excel report
+        st.download_button(
+            label="📊 Download Complete Comparison Report (Excel)",
+            data=excel_buffer,
+            file_name=f"treatment_comparison_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+        
+        st.caption("💡 Excel file contains 5 sheets: Summary, Stage Comparison, Pre-Treatment Details, Post-Treatment Details, and Clinical Interpretation")
 
 # =============================================
 # BATCH ANALYSIS MODE
