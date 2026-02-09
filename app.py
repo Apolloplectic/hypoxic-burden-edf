@@ -151,56 +151,52 @@ display_analysis_history()
 # --------------------------------------------------------------
 # SETTING PRESETS
 # --------------------------------------------------------------
+}
 PRESETS = {
     "Azarbarzin 2019 (Default)": {
         'pre_event_sec': 100,
-        'desat_start_sec': 60,
-        'desat_end_sec': 120,
+        'desat_start_sec': 0,      # Corrected: START not END
+        'desat_end_sec': 90,       # Corrected: 90s not 120s
         'desat_threshold': 3,
         'artifact_filter': 'Off',
-        'use_global_hb': True,
         'preset_baseline': 0.0,
-        'description': "Validated parameters from the original Azarbarzin et al. study (EHJ 2019)"
+        'description': "Exact parameters from Azarbarzin et al. EHJ 2019"
     },
     "AASM 2023 Standard": {
         'pre_event_sec': 120,
-        'desat_start_sec': 60,
+        'desat_start_sec': 0,
         'desat_end_sec': 90,
         'desat_threshold': 3,
         'artifact_filter': 'Mild (10%/s)',
-        'use_global_hb': True,
         'preset_baseline': 0.0,
-        'description': "Current clinical practice guidelines with conservative parameters"
+        'description': "Current clinical practice guidelines"
     },
     "Conservative (High Specificity)": {
         'pre_event_sec': 100,
-        'desat_start_sec': 60,
-        'desat_end_sec': 120,
+        'desat_start_sec': 0,
+        'desat_end_sec': 90,
         'desat_threshold': 4,
         'artifact_filter': 'Strict (5%/s)',
-        'use_global_hb': False,
         'preset_baseline': 0.0,
-        'description': "Minimizes false positives - only counts definite events (4% threshold)"
+        'description': "Minimizes false positives (4% threshold)"
     },
     "Aggressive (High Sensitivity)": {
         'pre_event_sec': 80,
-        'desat_start_sec': 45,
+        'desat_start_sec': 0,
         'desat_end_sec': 150,
         'desat_threshold': 3,
         'artifact_filter': 'Off',
-        'use_global_hb': True,
         'preset_baseline': 0.0,
-        'description': "Maximizes event detection - catches all possible desaturations"
+        'description': "Maximizes event detection"
     },
     "Custom": {
         'pre_event_sec': 100,
-        'desat_start_sec': 60,
-        'desat_end_sec': 120,
+        'desat_start_sec': 0,
+        'desat_end_sec': 90,
         'desat_threshold': 3,
         'artifact_filter': 'Off',
-        'use_global_hb': True,
         'preset_baseline': 0.0,
-        'description': "Manually configure all parameters using sliders"
+        'description': "Manually configure all parameters"
     }
 }
 
@@ -526,7 +522,7 @@ if edf_file is not None:
                         desat_end_sec=preset_params['desat_end_sec'],
                         artifact_filter=preset_params['artifact_filter'],
                         desat_threshold=preset_params['desat_threshold'],
-                        use_global_hb=preset_params['use_global_hb'],
+                        use_global_hb=True,
                         preset_baseline=preset_params['preset_baseline'],
                         use_mit_st=st.session_state.use_mit_st
                     )
