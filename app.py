@@ -19,6 +19,7 @@ from analysis_engine import PSGAnalyzer
 from pdf_generator import PDFReportGenerator
 from utils import initialize_session_state, load_edf_file
 from config import YASA_AVAILABLE
+from validation import PSGValidator, check_zero_events, check_unrealistic_hb
 
 # --------------------------------------------------------------
 # PAGE CONFIGURATION
@@ -167,7 +168,25 @@ if edf_file is not None:
     # Initialize analyzer
     analyzer = PSGAnalyzer(raw, temp_path)
     
+    # --------------------------------------------------------------
+    # DATA VALIDATION (Feature #3)
+    # --------------------------------------------------------------
+    st.markdown("#### 🔍 Data Quality Check")
+    
+    validator = PSGValidator(raw, analyzer)
+    validation_results = validator.validate_all()
+    
+    # Display validation results
+    validator.display_results(show_info=True)
+    
+    # Stop if critical errors
+    if not validation_results['valid']:
+        st.error("**Cannot proceed with analysis due to critical errors above.**")
+        st.stop()
+    
     # Display detected channels
+    st.markdown("---")
+    st.markdown("#### 📡 Detected Channels")
     st.write(f"**SpO₂:** `{analyzer.spo2_ch or 'Not found ❌'}`")
     st.write(f"**Airflow:** `{analyzer.flow_ch or 'Not found (will use SpO₂-based detection)'}`")
     st.write(f"**EEG:** `{analyzer.eeg_ch or 'Not found (staging limited)'}`")
