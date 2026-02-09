@@ -857,6 +857,181 @@ if edf_file is not None:
                 import pandas as pd
                 st.dataframe(pd.DataFrame(stage_data), use_container_width=True)
         
+        # --------------------------------------------------------------
+        # FEATURE #5: INTERACTIVE DESATURATION PLOT (Plotly)
+        # --------------------------------------------------------------
+        st.markdown("---")
+        st.subheader("📈 Interactive SpO₂ Analysis")
+        
+        try:
+            import plotly.graph_objects as go
+            from plotly.subplots import make_subplots
+            
+            # Get data from analyzer
+            spo2_data = analyzer.df_spo2.copy()
+            events = results.get('events', [])
+            stages = analyzer.stages
+            
+            # Define stage colors (subtle backgrounds)
+            STAGE_COLORS = {
+                'W': 'rgba(200, 200, 200, 0.15)',     # Light gray
+                'N1': 'rgba(135, 206, 235, 0.15)',    # Sky blue
+                'N2': 'rgba(70, 130, 180, 0.15)',     # Steel blue
+                'N3': 'rgba(25, 25, 112, 0.15)',      # Midnight blue
+                'REM': 'rgba(147, 112, 219, 0.15)'    # Medium purple
+            }
+            
+            # Performance optimization: downsample if >20k points (>5.5 hours)
+            if len(spo2_data) > 20000:
+                downsample_factor = max(1, len(spo2_data) // 15000)
+                spo2_data_plot = spo2_data.iloc[::downsample_factor].copy()
+                st.caption(f"ℹ️ Display downsampled to {len(spo2_data_plot):,} points for smooth rendering (original: {len(spo2_data):,})")
+            else:
+                spo2_data_plot = spo2_data
+            
+            # Create figure
+            fig = go.Figure()
+            
+            # Add sleep stage background shading
+            if stages is not None and len(stages) > 0:
+                epoch_duration = 30  # seconds per epoch
+                current_stage = stages[0]
+                stage_start = 0
+                
+                for i in range(1, len(stages) + 1):
+                    # Check if stage changed or reached end
+                    if i == len(stages) or stages[i] != current_stage:
+                        stage_end = i * epoch_duration
+                        
+                        # Add colored rectangle for this stage
+                        if current_stage in STAGE_COLORS:
+                            fig.add_vrect(
+                                x0=stage_start / 3600,
+                                x1=stage_end / 3600,
+                                fillcolor=STAGE_COLORS[current_stage],
+                                layer="below",
+                                line_width=0,
+                                annotation_text=current_stage if (stage_end - stage_start) / 3600 > 0.3 else "",
+                                annotation_position="top left",
+                                annotation_font_size=8,
+                                annotation_font_color="gray"
+                            )
+                        
+                        # Update for next stage
+                        if i < len(stages):
+                            current_stage = stages[i]
+                            stage_start = stage_end
+            
+            # Add baseline reference line (if available)
+            if results.get('baseline_used'):
+                fig.add_hline(
+                    y=results['baseline_used'],
+                    line_dash="dash",
+                    line_color="green",
+                    line_width=1,
+                    opacity=0.5,
+                    annotation_text=f"Baseline: {results['baseline_used']:.1f}%",
+                    annotation_position="right"
+                )
+            
+            # Add SpO₂ trace
+            fig.add_trace(go.Scattergl(
+                x=spo2_data_plot['time'] / 3600,  # Convert to hours
+                y=spo2_data_plot['spo2'],
+                mode='lines',
+                name='SpO₂',
+                line=dict(color='#1f77b4', width=1.5),
+                hovertemplate='<b>Time:</b> %{x:.2f}h<br>' +
+                              '<b>SpO₂:</b> %{y:.1f}%<br>' +
+                              '<extra></extra>'
+            ))
+            
+            # Add event highlighting (red rectangles)
+            if events and len(events) > 0:
+                # Group nearby events to reduce number of rectangles
+                event_groups = []
+                current_group = {'start': events[0]['start'], 'end': events[0]['end']}
+                
+                for event in events[1:]:
+                    # If event starts within 30s of current group end, extend the group
+                    if event['start'] - current_group['end'] < 30:
+                        current_group['end'] = max(current_group['end'], event['end'])
+                    else:
+                        event_groups.append(current_group)
+                        current_group = {'start': event['start'], 'end': event['end']}
+                
+                event_groups.append(current_group)
+                
+                # Add rectangles for event groups
+                for group in event_groups:
+                    fig.add_vrect(
+                        x0=group['start'] / 3600,
+                        x1=group['end'] / 3600,
+                        fillcolor="rgba(255, 0, 0, 0.2)",
+                        layer="above",
+                        line_width=0
+                    )
+                
+                # Add invisible trace for legend
+                fig.add_trace(go.Scatter(
+                    x=[None],
+                    y=[None],
+                    mode='markers',
+                    marker=dict(size=10, color='rgba(255, 0, 0, 0.3)'),
+                    showlegend=True,
+                    name=f'Events (n={len(events)})'
+                ))
+            
+            # Configure layout
+            fig.update_layout(
+                title='SpO₂ and Respiratory Events Over Time',
+                xaxis_title='Time (hours)',
+                yaxis_title='SpO₂ (%)',
+                height=500,
+                hovermode='x unified',
+                showlegend=True,
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1
+                ),
+                xaxis=dict(
+                    rangeslider=dict(visible=True, thickness=0.05),
+                    type='linear'
+                ),
+                yaxis=dict(
+                    range=[max(70, spo2_data_plot['spo2'].min() - 5), 
+                           min(100, spo2_data_plot['spo2'].max() + 2)]
+                )
+            )
+            
+            # Display interactive plot
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Add helpful tips
+            with st.expander("💡 How to use this interactive plot"):
+                st.markdown("""
+                **Interactive Features:**
+                - 🔍 **Zoom:** Click and drag to select a region, or use the range slider below
+                - 🖱️ **Pan:** Hold Shift and drag to pan across the timeline
+                - 🔄 **Reset:** Double-click to reset zoom
+                - 👆 **Hover:** Move your mouse over the plot to see detailed values
+                - 👁️ **Legend:** Click legend items to show/hide data layers
+                
+                **Visual Elements:**
+                - **Blue line:** SpO₂ saturation over time
+                - **Red shading:** Respiratory events (apnea/hypopnea)
+                - **Background colors:** Sleep stages (gray=Wake, light blue=N1, medium blue=N2, dark blue=N3, purple=REM)
+                - **Green dashed line:** Baseline SpO₂ reference
+                """)
+        
+        except ImportError:
+            st.warning("⚠️ Plotly not installed. Install with: `pip install plotly`")
+        except Exception as e:
+            st.error(f"⚠️ Error generating interactive plot: {e}")
+        
         # Report generation
         st.markdown("---")
         st.subheader("📄 Generate Report")
