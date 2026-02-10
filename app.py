@@ -1102,8 +1102,11 @@ elif analysis_mode == "Treatment Comparison (Before/After)" and pre_treatment_fi
     analyzer_pre = PSGAnalyzer(raw_pre, temp_path_pre)
     analyzer_post = PSGAnalyzer(raw_post, temp_path_post)
     
-    # Validate both files if 'use_mit_st' not in st.session_state:
-    st.session_state.use_mit_st = False
+    # Initialize session state
+    if 'use_mit_st' not in st.session_state:
+        st.session_state.use_mit_st = False
+    
+    # Validate both files
     st.markdown("### 🔍 Data Quality Check")
     
     # Just show basic info, don't validate
