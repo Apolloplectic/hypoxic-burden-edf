@@ -1,27 +1,9 @@
-# Core dependencies
 streamlit>=1.28.0
-numpy>=1.24.0
-pandas>=2.0.0
-scipy>=1.10.0
-
-# EDF file handling
 mne>=1.5.0
-pyedflib>=0.1.30
-
-# Sleep staging (optional but recommended)
-yasa>=0.6.3
-antropy>=0.1.5
-
-# MIT database support
-wfdb>=4.1.0
-
-# Visualization
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.11.0
 matplotlib>=3.7.0
-plotly>=5.0.0
-
-# Report generation
 reportlab>=4.0.0
-openpyxl>=3.1.0
-
-# PDF manipulation
-PyPDF2>=3.0.0
+wfdb>=4.1.0
+yasa>=0.6.0
