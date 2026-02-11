@@ -59,7 +59,7 @@ st.markdown("### 📁 Upload Mode")
 # Mode selection
 analysis_mode = st.radio(
     "Select Analysis Mode:",
-    ["Single File Analysis", "Treatment Comparison (Before/After) - Broken at the moment"],
+    ["Single File Analysis", "Treatment Comparison (Before/After)"],
     help="Compare pre-treatment vs post-treatment PSG studies"
 )
 
@@ -1598,8 +1598,8 @@ if batch_files:
                 
                 results = analyzer.run_full_analysis(
                     pre_event_sec=100,
-                    desat_start_sec=60,
-                    desat_end_sec=120,
+                    desat_start_sec=0,
+                    desat_end_sec=90,
                     artifact_filter="Off",
                     desat_threshold=desat_thresh_val,
                     use_global_hb=batch_use_global_hb,
