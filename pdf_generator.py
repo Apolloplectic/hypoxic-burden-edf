@@ -12,6 +12,8 @@ from reportlab.lib import colors
 from reportlab.lib.units import inch
 import pandas as pd
 
+from config import RISK_THRESHOLDS
+
 
 class PDFReportGenerator:
     """Generate PDF reports for hypoxic burden analysis"""
@@ -380,22 +382,22 @@ class PDFReportGenerator:
     
     def _interpret_hb(self, hb):
         """Interpret HB risk level"""
-        if hb < 20:
+        if hb < RISK_THRESHOLDS['moderate']:
             return "Low risk"
-        elif hb < 53:
+        elif hb < RISK_THRESHOLDS['high']:
             return "Moderate risk"
-        elif hb < 88:
+        elif hb < RISK_THRESHOLDS['very_high']:
             return "High risk"
         else:
             return "Very high risk"
-    
+
     def _get_risk_level(self, hb):
         """Get risk level and color"""
-        if hb < 20:
+        if hb < RISK_THRESHOLDS['moderate']:
             return "Low", colors.green
-        elif hb < 53:
+        elif hb < RISK_THRESHOLDS['high']:
             return "Moderate", colors.yellow
-        elif hb < 88:
+        elif hb < RISK_THRESHOLDS['very_high']:
             return "High", colors.orange
         else:
             return "Very High", colors.red
