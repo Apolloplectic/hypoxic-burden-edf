@@ -5,6 +5,7 @@ Utility functions for Hypoxic Burden Calculator
 import streamlit as st
 import mne
 import os
+import tempfile
 
 
 def initialize_session_state():
@@ -23,14 +24,14 @@ def initialize_session_state():
 def load_edf_file(uploaded_file, filename="temp_upload.edf"):
     """
     Load an EDF file from Streamlit uploader
-    
+
     Parameters:
     -----------
     uploaded_file : UploadedFile
         Streamlit uploaded file object
     filename : str
-        Temporary filename to use
-    
+        Temporary filename to use (ignored, kept for API compatibility)
+
     Returns:
     --------
     raw : mne.io.Raw or None
@@ -39,16 +40,21 @@ def load_edf_file(uploaded_file, filename="temp_upload.edf"):
         Path to temporary file
     """
     try:
-        # Save uploaded file to temp location
-        temp_path = filename
-        with open(temp_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        
+        # Save uploaded file to a unique temp location to avoid race conditions
+        suffix = os.path.splitext(uploaded_file.name)[1] if hasattr(uploaded_file, 'name') else '.edf'
+        fd, temp_path = tempfile.mkstemp(suffix=suffix, prefix="hb_upload_")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+        except Exception:
+            os.close(fd)
+            raise
+
         # Load with MNE
         raw = mne.io.read_raw_edf(temp_path, preload=True, verbose=False)
-        
+
         return raw, temp_path
-    
+
     except Exception as e:
         st.error(f"Error loading EDF file: {str(e)}")
         return None, None
@@ -156,19 +162,19 @@ def validate_edf_file(raw):
     # Check for SpO₂ (required)
     spo2_ch = detect_channel(raw.ch_names, CHANNEL_PATTERNS['spo2'])
     if not spo2_ch:
-        return False, "SpO₂ channel not found. This channel is required for analysis."
-    
+        return False, ["SpO₂ channel not found. This channel is required for analysis."]
+
     # Warnings for missing optional channels
     warnings = []
-    
+
     flow_ch = detect_channel(raw.ch_names, CHANNEL_PATTERNS['flow'])
     if not flow_ch:
         warnings.append("Airflow channel not found - AHI will be estimated from SpO₂ only")
-    
+
     eeg_ch = detect_channel(raw.ch_names, CHANNEL_PATTERNS['eeg'])
     if not eeg_ch:
         warnings.append("EEG channel not found - sleep staging will be limited")
-    
+
     return True, warnings
 
 
