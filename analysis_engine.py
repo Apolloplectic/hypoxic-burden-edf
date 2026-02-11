@@ -2,6 +2,7 @@
 Core PSG Analysis Engine for Hypoxic Burden Calculator
 """
 
+import logging
 import numpy as np
 import pandas as pd
 import mne
@@ -14,6 +15,8 @@ from utils import detect_channel, calculate_robust_baseline
 
 if YASA_AVAILABLE:
     import yasa
+
+logger = logging.getLogger('HB_Calculator')
 
 
 class PSGAnalyzer:
@@ -71,35 +74,43 @@ class PSGAnalyzer:
         try:
             # Load annotations
             ann = wfdb.rdann(str(st_path).rsplit(".", 1)[0], "st")
-            
-            # Extract respiratory events (A = apnea, H = hypopnea)
-            resp_idx = [i for i, s in enumerate(ann.symbol) if s and ("A" in s or "H" in s)]
-            
+
+            # Separate respiratory events from sleep stages
+            # Respiratory events contain 'A' (apnea) or 'H' (hypopnea)
+            # Sleep stages are single-char: W, 1, 2, 3, 4, R
+            stage_chars = {'W', '1', '2', '3', '4', 'R'}
+
+            resp_idx = [i for i, s in enumerate(ann.symbol)
+                        if s and ("A" in s or "H" in s)]
+
             if resp_idx:
                 times_sec = ann.sample[resp_idx] / self.raw.info["sfreq"]
                 self.manual_events = [{"start": t, "end": t + 10.0} for t in times_sec]
-                
+
                 total_sleep_sec = self.raw.times[-1]
                 self.manual_ahi = len(self.manual_events) * 3600 / total_sleep_sec
-            
-            # Extract sleep stages
+
+            # Extract sleep stages (only symbols that are exactly stage characters)
+            stage_indices = [i for i, s in enumerate(ann.symbol)
+                            if s in stage_chars]
             stage_symbols = []
-            for desc in ann.symbol:
-                if desc in ['W', '1', '2', '3', '4']:
-                    stage_symbols.append('W' if desc == 'W' else f'N{desc}')
+            for i in stage_indices:
+                desc = ann.symbol[i]
+                if desc == 'W':
+                    stage_symbols.append('W')
                 elif desc == 'R':
                     stage_symbols.append('REM')
-                else:
-                    stage_symbols.append('Unknown')
-            
+                elif desc in ('1', '2', '3', '4'):
+                    stage_symbols.append(f'N{desc}')
+
             if stage_symbols:
                 max_epochs = int(self.raw.times[-1] / 30)
                 self.manual_stages = stage_symbols[:max_epochs]
-            
+
             return True
         
         except Exception as e:
-            print(f"Error loading MIT annotations: {e}")
+            logger.warning("Error loading MIT annotations: %s", e)
             return False
     
     def preprocess_spo2(self, artifact_filter='Off'):
@@ -173,17 +184,44 @@ class PSGAnalyzer:
         """
         if self.df_spo2 is None:
             raise ValueError("Must run preprocess_spo2() first")
-        
-        df = self.df_spo2.copy()
-        
-        # Look for drops ≥ threshold that recover
-        df['spo2_next'] = df['spo2'].shift(-10)  # Look 10s ahead
-        df['desat'] = (
-            (df['spo2'].diff() <= -desat_threshold) &
-            (df['spo2_next'] >= df['spo2'] + (desat_threshold - 1))
-        )
-        
-        self.odi_events = df[df['desat']].copy()
+
+        spo2 = self.df_spo2['spo2'].values
+        times = self.df_spo2['time'].values
+        n = len(spo2)
+
+        # Rolling baseline: max SpO2 in preceding 120s window
+        window_sec = 120
+        events = []
+        i = 0
+        while i < n:
+            # Baseline: max SpO2 in the 120s before this point
+            base_start = max(0, i - window_sec)
+            baseline = np.nanmax(spo2[base_start:i]) if i > 0 else spo2[0]
+
+            # Check if current value is ≥ threshold below baseline
+            if baseline - spo2[i] >= desat_threshold:
+                # Found a desaturation — find the nadir
+                nadir_idx = i
+                while nadir_idx + 1 < n and spo2[nadir_idx + 1] <= spo2[nadir_idx]:
+                    nadir_idx += 1
+
+                # Check for recovery (rise ≥ threshold-1 from nadir within 120s)
+                recovery_end = min(n, nadir_idx + window_sec)
+                recovered = False
+                for j in range(nadir_idx + 1, recovery_end):
+                    if spo2[j] - spo2[nadir_idx] >= (desat_threshold - 1):
+                        recovered = True
+                        break
+
+                if recovered:
+                    events.append({'time': times[i], 'spo2': spo2[nadir_idx]})
+
+                # Skip past this event to avoid double-counting
+                i = nadir_idx + 1
+            else:
+                i += 1
+
+        self.odi_events = pd.DataFrame(events) if events else pd.DataFrame(columns=['time', 'spo2'])
         return self.odi_events
     
     def detect_apnea_hypopnea_events(self, desat_threshold=3):
@@ -306,20 +344,28 @@ class PSGAnalyzer:
         """
         Estimate events from SpO₂ alone (less accurate, used when no airflow)
         """
-        # Find significant SpO₂ drops
-        drops = self.df_spo2['spo2'].diff() < -desat_threshold
-        starts = self.df_spo2[drops].index
-        
-        # Assume events last ~60s
-        ends = (starts + 60).clip(upper=len(self.df_spo2) - 1)
-        
+        spo2 = self.df_spo2['spo2'].values
+        times = self.df_spo2['time'].values
+        n = len(spo2)
+        assumed_duration = 60  # Assume events last ~60s
+
         events = []
-        for s, e in zip(starts, ends):
-            events.append({
-                "start": self.df_spo2.loc[s, 'time'],
-                "end": self.df_spo2.loc[e, 'time']
-            })
-        
+        i = 0
+        while i < n:
+            # Rolling baseline: max SpO2 in preceding 120s
+            base_start = max(0, i - 120)
+            baseline = np.nanmax(spo2[base_start:i]) if i > 0 else spo2[0]
+
+            if baseline - spo2[i] >= desat_threshold:
+                start_time = times[i]
+                end_time = min(start_time + assumed_duration, times[-1])
+                events.append({"start": start_time, "end": end_time})
+                # Skip past this event
+                skip_to = i + assumed_duration
+                i = min(int(skip_to), n)
+            else:
+                i += 1
+
         return events
     
     def perform_sleep_staging(self, use_mit_st=False):
@@ -336,34 +382,34 @@ class PSGAnalyzer:
         list
             Sleep stages for each 30s epoch
         """
-        import streamlit as st
-        
         if use_mit_st and self.manual_stages is not None:
-            st.info("✅ Using MIT gold standard annotations")
+            logger.info("Using MIT gold standard annotations")
             self.stages = self.manual_stages
             return self.stages
-        
+
         # Check if YASA is available and we have EEG
         if YASA_AVAILABLE:
             if not self.eeg_ch:
-                st.warning("⚠️ YASA available but no EEG channel found - using rule-based staging")
+                logger.warning("YASA available but no EEG channel found - using rule-based staging")
             elif self.raw.info['sfreq'] < 100:
-                st.warning(f"⚠️ YASA requires ≥100 Hz, got {self.raw.info['sfreq']} Hz - using rule-based staging")
+                logger.warning("YASA requires >=100 Hz, got %s Hz - using rule-based staging",
+                               self.raw.info['sfreq'])
             else:
-                st.info(f"🔬 Attempting YASA deep learning staging (sfreq: {self.raw.info['sfreq']} Hz)")
+                logger.info("Attempting YASA deep learning staging (sfreq: %s Hz)",
+                            self.raw.info['sfreq'])
                 try:
                     stages = self._yasa_staging()
                     self.stages = stages
-                    st.success(f"✅ YASA staging successful: {len(stages)} epochs")
+                    logger.info("YASA staging successful: %d epochs", len(stages))
                     return stages
                 except Exception as e:
-                    st.error(f"❌ YASA failed: {type(e).__name__}: {str(e)}")
-                    st.warning("🔄 Falling back to rule-based staging...")
+                    logger.error("YASA failed: %s: %s", type(e).__name__, e)
+                    logger.warning("Falling back to rule-based staging...")
         else:
-            st.info("ℹ️ YASA not installed - using rule-based staging")
-        
+            logger.info("YASA not installed - using rule-based staging")
+
         # Fall back to rule-based staging
-        st.info("🔬 Using rule-based spectral staging")
+        logger.info("Using rule-based spectral staging")
         stages = self._rule_based_staging()
         self.stages = stages
         return stages
@@ -372,56 +418,35 @@ class PSGAnalyzer:
         """
         Perform automatic sleep staging using YASA
         """
-        try:
-            # Check sampling rate
-            if self.raw.info['sfreq'] < 100:
-                print(f"⚠️ YASA requires ≥100 Hz, got {self.raw.info['sfreq']} Hz")
-                raise ValueError(f"Sampling rate too low: {self.raw.info['sfreq']} Hz")
-            
-            # Try to create SleepStaging object
-            print(f"🔬 Attempting YASA staging with EEG: {self.eeg_ch}, EOG: {self.eog_ch}, EMG: {self.emg_ch}")
-            
-            sls = yasa.SleepStaging(
-                self.raw,
-                eeg_name=self.eeg_ch,
-                eog_name=self.eog_ch,
-                emg_name=self.emg_ch
-            )
-            
-            print("✅ YASA SleepStaging object created successfully")
-            
-            # Try to predict
-            hypno = sls.predict()
-            print(f"✅ YASA prediction successful: {len(hypno)} epochs")
-            
-            # Convert YASA stages to standard format
-            stages = []
-            for stage in hypno:
-                if stage == 'W':
-                    stages.append('W')
-                elif stage == 'N1':
-                    stages.append('N1')
-                elif stage == 'N2':
-                    stages.append('N2')
-                elif stage == 'N3':
-                    stages.append('N3')
-                elif stage == 'R':
-                    stages.append('REM')
-                else:
-                    stages.append('Unknown')
-            
-            # Crop to recording duration
-            max_epochs = int(self.raw.times[-1] / 30)
-            stages = stages[:max_epochs]
-            
-            print(f"✅ YASA staging complete: {len(stages)} epochs converted")
-            return stages
-            
-        except Exception as e:
-            print(f"❌ YASA staging failed: {type(e).__name__}: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            raise  # Re-raise to trigger fallback
+        # Check sampling rate
+        if self.raw.info['sfreq'] < 100:
+            raise ValueError(f"Sampling rate too low: {self.raw.info['sfreq']} Hz")
+
+        logger.info("Attempting YASA staging with EEG: %s, EOG: %s, EMG: %s",
+                     self.eeg_ch, self.eog_ch, self.emg_ch)
+
+        sls = yasa.SleepStaging(
+            self.raw,
+            eeg_name=self.eeg_ch,
+            eog_name=self.eog_ch,
+            emg_name=self.emg_ch
+        )
+
+        logger.info("YASA SleepStaging object created successfully")
+
+        hypno = sls.predict()
+        logger.info("YASA prediction successful: %d epochs", len(hypno))
+
+        # Convert YASA stages to standard format
+        stage_map = {'W': 'W', 'N1': 'N1', 'N2': 'N2', 'N3': 'N3', 'R': 'REM'}
+        stages = [stage_map.get(s, 'Unknown') for s in hypno]
+
+        # Crop to recording duration
+        max_epochs = int(self.raw.times[-1] / 30)
+        stages = stages[:max_epochs]
+
+        logger.info("YASA staging complete: %d epochs converted", len(stages))
+        return stages
     
     def _rule_based_staging(self):
         """
@@ -446,16 +471,17 @@ class PSGAnalyzer:
                 baseline=None,
                 verbose=False
             )
-        except Exception:
+        except Exception as e:
+            logger.warning("Could not create MNE Epochs for staging: %s", e)
             n_epochs = int(self.raw.times[-1] / 30)
             return ['Total'] * n_epochs
-        
+
         stages = []
-        
+
         for i in range(len(epochs)):
             try:
                 epoch = epochs[i]
-                
+
                 # Compute power spectral density
                 psds, freqs = mne.time_frequency.psd_array_welch(
                     epoch.get_data(picks=self.eeg_ch)[0],
@@ -465,13 +491,13 @@ class PSGAnalyzer:
                     n_fft=1024,
                     verbose=False
                 )
-                
+
                 # Calculate band powers
                 delta = np.mean(psds[(freqs >= 0.5) & (freqs < 4)])
                 theta = np.mean(psds[(freqs >= 4) & (freqs < 8)])
                 alpha = np.mean(psds[(freqs >= 8) & (freqs < 12)])
                 spindle = np.mean(psds[(freqs >= 12) & (freqs < 15)])
-                
+
                 # Simple staging rules
                 if alpha > theta * 1.5:
                     stage = 'W'
@@ -483,12 +509,13 @@ class PSGAnalyzer:
                     stage = 'N1'
                 else:
                     stage = 'REM'
-                
+
                 stages.append(stage)
-            
-            except Exception:
+
+            except Exception as e:
+                logger.debug("Could not stage epoch %d: %s", i, e)
                 stages.append('Unknown')
-        
+
         return stages
     
     def calculate_hypoxic_burden(self, pre_event_sec=100, desat_start_sec=60,
@@ -528,20 +555,19 @@ class PSGAnalyzer:
                     if hrs == 0:
                         continue
                     
-                    # Calculate ODI for this stage
-                    stage_indices = [i for i, s in enumerate(self.stages) if s == stage]
-                    if stage_indices:
-                        stage_start_sec = stage_indices[0] * 30
-                        stage_end_sec = stage_start_sec + hrs * 3600
-                        
-                        odi_in_stage = self.odi_events[
-                            (self.odi_events['time'] >= stage_start_sec) &
-                            (self.odi_events['time'] < stage_end_sec)
+                    # Calculate ODI for this stage using all epochs of this stage
+                    stage_epoch_indices = [i for i, s in enumerate(self.stages) if s == stage]
+                    odi_count = 0
+                    for ei in stage_epoch_indices:
+                        epoch_start = ei * 30
+                        epoch_end = (ei + 1) * 30
+                        odi_in_epoch = self.odi_events[
+                            (self.odi_events['time'] >= epoch_start) &
+                            (self.odi_events['time'] < epoch_end)
                         ]
-                        odi_stage = len(odi_in_stage) / hrs if hrs > 0 else 0
-                    else:
-                        odi_stage = 0
-                    
+                        odi_count += len(odi_in_epoch)
+                    odi_stage = odi_count / hrs if hrs > 0 else 0
+
                     stage_results[stage] = {
                         'hrs': hrs,
                         'AHI': 0.0,
@@ -558,26 +584,28 @@ class PSGAnalyzer:
         if self.stages is None:
             self.perform_sleep_staging()
         
+        # Assign each event a sleep stage based on its start time epoch
+        event_stages = []
+        for _, ev in self.events_df.iterrows():
+            epoch_idx = int(ev['start'] // 30)
+            if epoch_idx < len(self.stages):
+                s = self.stages[epoch_idx]
+                if s not in ('W', 'N1', 'N2', 'N3', 'REM'):
+                    s = 'Unknown'
+            else:
+                s = 'Unknown'
+            event_stages.append(s)
+        self.events_df['stage'] = event_stages
+
         # Organize events by sleep stage
         stage_events = {'W': [], 'N1': [], 'N2': [], 'N3': [], 'REM': [], 'Unknown': [], 'Total': []}
-        
-        for i, stage in enumerate(self.stages):
-            if stage not in stage_events:
-                stage = 'Unknown'
-            
-            start_sec = i * 30
-            end_sec = (i + 1) * 30
-            
-            # Find events in this epoch
-            # IMPORTANT: Use 'start' time to attribute events to the sleep stage where they began,
-            # not the stage where the arousal occurred (which is often Wake)
-            evs = self.events_df[
-                (self.events_df['start'] >= start_sec) &
-                (self.events_df['start'] < end_sec)
-            ]
-            
-            stage_events[stage].extend(evs.to_dict('records'))
-            stage_events['Total'].extend(evs.to_dict('records'))
+
+        for stage in stage_events:
+            if stage == 'Total':
+                stage_events['Total'] = self.events_df.to_dict('records')
+            else:
+                evs = self.events_df[self.events_df['stage'] == stage]
+                stage_events[stage] = evs.to_dict('records')
         
         # Calculate HB for each stage
         stage_results = {}
@@ -603,19 +631,18 @@ class PSGAnalyzer:
             
             hb_stage = (area_total / 60) / hrs if hrs > 0 else 0
             
-            # Calculate stage-specific ODI
-            stage_indices = [i for i, s in enumerate(self.stages) if s == stage]
-            if stage_indices:
-                stage_start_sec = stage_indices[0] * 30
-                stage_end_sec = stage_start_sec + hrs * 3600
-                
-                odi_in_stage = self.odi_events[
-                    (self.odi_events['time'] >= stage_start_sec) &
-                    (self.odi_events['time'] < stage_end_sec)
+            # Calculate stage-specific ODI across all epochs of this stage
+            stage_epoch_indices = [i for i, s in enumerate(self.stages) if s == stage]
+            odi_count = 0
+            for ei in stage_epoch_indices:
+                epoch_start = ei * 30
+                epoch_end = (ei + 1) * 30
+                odi_in_epoch = self.odi_events[
+                    (self.odi_events['time'] >= epoch_start) &
+                    (self.odi_events['time'] < epoch_end)
                 ]
-                odi_stage = len(odi_in_stage) / hrs if hrs > 0 else 0
-            else:
-                odi_stage = 0
+                odi_count += len(odi_in_epoch)
+            odi_stage = odi_count / hrs if hrs > 0 else 0
             
             ahi_stage = len(evs) / hrs if hrs > 0 else 0
             
@@ -694,8 +721,8 @@ class PSGAnalyzer:
             if len(win_df) < 2:
                 continue
             
-            # Remove artifacts if filter is enabled
-            if artifact_filter != "Off" and 'artifact' in self.df_spo2.columns:
+            # Remove artifacts if artifact column exists
+            if 'artifact' in self.df_spo2.columns:
                 artifact_indices = self.df_spo2[self.df_spo2['artifact']].index
                 win_df = win_df[~win_df.index.isin(artifact_indices)]
             
@@ -746,16 +773,11 @@ class PSGAnalyzer:
                 percentile=95
             )
         
-        # Calculate area above SpO₂ curve (integral of 100 - SpO₂)
-        depth_global = np.maximum(100 - self.df_spo2['spo2'].values, 0)
-        area_above_spo2 = trapz(depth_global, self.df_spo2['time'].values)
-        
-        # Calculate area of rectangle above baseline
+        # Calculate area below baseline (integral of max(baseline - SpO₂, 0))
+        depth_global = np.maximum(baseline - self.df_spo2['spo2'].values, 0)
+        global_desat_area = trapz(depth_global, self.df_spo2['time'].values)
+
         total_sleep_sec = self.df_spo2['time'].max()
-        area_above_baseline = (100 - baseline) * total_sleep_sec
-        
-        # Global desaturation area = difference
-        global_desat_area = max(0, area_above_spo2 - area_above_baseline)
         
         # Convert to (%min)/h
         total_hours = total_sleep_sec / 3600
@@ -883,8 +905,8 @@ class PSGAnalyzer:
                 if len(win_df) < 2:
                     continue
                 
-                # Remove artifacts
-                if artifact_filter != "Off" and 'artifact' in self.df_spo2.columns:
+                # Remove artifacts if artifact column exists
+                if 'artifact' in self.df_spo2.columns:
                     artifact_indices = self.df_spo2[self.df_spo2['artifact']].index
                     win_df = win_df[~win_df.index.isin(artifact_indices)]
                 
@@ -902,8 +924,8 @@ class PSGAnalyzer:
         
         return (ci_low, ci_high)
     
-    def run_full_analysis(self, pre_event_sec=100, desat_start_sec=60,
-                         desat_end_sec=120, artifact_filter='Off',
+    def run_full_analysis(self, pre_event_sec=100, desat_start_sec=0,
+                         desat_end_sec=90, artifact_filter='Off',
                          desat_threshold=3, use_global_hb=True,
                          preset_baseline=0.0, use_mit_st=False):
         """
