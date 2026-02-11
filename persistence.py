@@ -7,6 +7,8 @@ import streamlit as st
 import json
 from datetime import datetime
 
+from config import get_risk_level
+
 
 def save_analysis_to_session(filename, results, params):
     """
@@ -44,18 +46,6 @@ def save_analysis_to_session(filename, results, params):
     # Add to history (keep last 10)
     st.session_state.analysis_history.insert(0, analysis_record)
     st.session_state.analysis_history = st.session_state.analysis_history[:10]
-
-
-def get_risk_level(hb):
-    """Get risk level from HB value"""
-    if hb < 20:
-        return "Low"
-    elif hb < 53:
-        return "Moderate"
-    elif hb < 88:
-        return "High"
-    else:
-        return "Very High"
 
 
 def display_analysis_history():
