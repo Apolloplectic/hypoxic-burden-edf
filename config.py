@@ -13,8 +13,8 @@ except ImportError:
 # Default analysis parameters (Azarbarzin et al. 2019)
 DEFAULT_PARAMS = {
     'pre_event_sec': 100,  # Pre-event baseline window
-    'desat_start_sec': 60,  # Desaturation window start (before event end)
-    'desat_end_sec': 120,   # Desaturation window end (after event end)
+    'desat_start_sec': 0,   # Offset from event START (0 for Azarbarzin method)
+    'desat_end_sec': 90,    # Seconds after event END (90 for Azarbarzin method)
     'desat_threshold': 3,    # AASM standard (3% or 4%)
     'artifact_filter': 'Off',  # 'Off', 'Mild (10%/s)', 'Strict (5%/s)'
     'use_global_hb': True,    # Calculate global hypoxic burden
@@ -38,6 +38,18 @@ RISK_THRESHOLDS = {
     'high': 53,
     'very_high': 88,
 }
+
+def get_risk_level(hb):
+    """Get risk level string from HB value using centralized thresholds."""
+    if hb < RISK_THRESHOLDS['moderate']:
+        return "Low"
+    elif hb < RISK_THRESHOLDS['high']:
+        return "Moderate"
+    elif hb < RISK_THRESHOLDS['very_high']:
+        return "High"
+    else:
+        return "Very High"
+
 
 # File size limits
 FILE_SIZE_LIMITS = {
