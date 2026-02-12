@@ -24,10 +24,38 @@ DEFAULT_PARAMS = {
 # Channel name patterns for auto-detection
 CHANNEL_PATTERNS = {
     'spo2': ['SPO2', 'SAO2', 'SaO2', 'SpO2'],
-    'flow': ['AIRFLOW', 'FLOW', 'PFlow', 'PFLW', 'NASAL'],
-    'eeg': ['F3M2', 'F3-M2', 'F4M1', 'F4-M1', 'C3M2', 'C3-M2', 'C4M1', 'C4-M1', 
-            'O1M2', 'O1-M2', 'O2M1', 'O2-M1', 'EEG', 'C3', 'C4', 'F3', 'F4'],
-    'eog': ['E1M2', 'E1-M2', 'E2M2', 'E2-M2', 'REOGM2', 'LEOGM2', 'EOG', 'ROC', 'LOC'],
+    'flow': [
+        'AIRFLOW', 'FLOW', 'PFlow', 'PFLW', 'NASAL',
+        # Abbreviated nasal airflow (common in European PSG systems)
+        'NAF2P', 'NAF1', 'NAF',
+        # Thermistor / thermocouple
+        'THERM',
+    ],
+    'eeg': [
+        # Central channels preferred for sleep staging (YASA needs C3/C4/CZ)
+        # --- Central montages first ---
+        'C3M2', 'C3-M2', 'C4M1', 'C4-M1',
+        'C3-A2', 'C4-A1', 'C3-A1', 'C4-A2',
+        'CZ-A1', 'CZ-A2', 'CZ2-A1',
+        # --- Then frontal ---
+        'F3M2', 'F3-M2', 'F4M1', 'F4-M1',
+        'F3-A2', 'F4-A1', 'F3-A1', 'F4-A2',
+        'FP1-A2', 'FP2-A1', 'FP1-A1', 'FP2-A2',
+        # --- Then occipital ---
+        'O1M2', 'O1-M2', 'O2M1', 'O2-M1',
+        'O1-A2', 'O2-A1', 'O1-A1', 'O2-A2',
+        # Generic EEG labels
+        'EEG',
+        # Bare electrode names (short — must come AFTER more specific patterns)
+        'C3', 'C4', 'CZ', 'F3', 'F4',
+    ],
+    'eog': [
+        'E1M2', 'E1-M2', 'E2M2', 'E2-M2',
+        'REOGM2', 'LEOGM2',
+        'EOG', 'ROC', 'LOC',
+        # E1/E2 without reference (common short form)
+        'E1-', 'E2-',
+    ],
     'emg': ['CEMG', 'EMG', 'CHIN', 'Chin'],
 }
 
