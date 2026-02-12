@@ -87,9 +87,12 @@ class PDFReportGenerator:
         metrics_data = [
             ["Metric", "Value", "Interpretation"],
             ["AHI (events/hour)", f"{results['ahi']:.1f}", self._interpret_ahi(results['ahi'])],
-            [f"ODI (≥3% drops/hour)", f"{results['odi']:.1f}", ""],
-            ["Obstructive Hypoxic Burden", f"{results['total_hb']:.2f} (%min)/h", 
-             self._interpret_hb(results['total_hb'])],
+            [f"ODI (\u22653% drops/hour)", f"{results['odi']:.1f}", ""],
+            [
+                "Hypoxic Burden (Parekh)" if results.get('method') == 'parekh' else "Obstructive Hypoxic Burden",
+                f"{results['total_hb']:.2f} (%min)/h",
+                self._interpret_hb(results['total_hb'])
+            ],
         ]
         
         if len(results['events']) > 0:
@@ -107,10 +110,18 @@ class PDFReportGenerator:
         
         # Global HB
         if results.get('global_hb') is not None:
+            bl_method = results.get('baseline_method', 'stage_specific')
+            if bl_method == 'floating':
+                window_min = results.get('floating_window_sec', 600) // 60
+                baseline_note = f"Floating baseline ({window_min}-min window)"
+            elif bl_method == 'stage_specific':
+                baseline_note = f"Wt. Avg Baseline: {results['baseline_used']:.1f}% (stage-specific)"
+            else:
+                baseline_note = f"Baseline: {results['baseline_used']:.1f}% (whole-night)"
             metrics_data.append([
                 "Global Hypoxic Burden",
                 f"{results['global_hb']:.2f} (%min)/h",
-                f"Baseline: {results['baseline_used']:.1f}%"
+                baseline_note
             ])
         
         metrics_table = Table(metrics_data, colWidths=[2.5*inch, 1.5*inch, 2*inch])
@@ -211,21 +222,69 @@ class PDFReportGenerator:
         # Methodology
         story.append(PageBreak())
         story.append(Paragraph("Methodology", self.heading_style))
-        story.append(Paragraph(
-            "<b>Obstructive Hypoxic Burden:</b> Event-specific method from Azarbarzin et al., "
-            "European Heart Journal 2019;40:1149-1157. Calculates area under desaturation "
-            "curve for each apnea/hypopnea event.",
-            self.styles['Normal']
-        ))
+
+        if results.get('method') == 'parekh':
+            story.append(Paragraph(
+                "<b>Hypoxic Burden (Parekh 2023):</b> Automated SpO2 nadir detection method from "
+                "Parekh et al., AJRCCM 2023;208(11):1216-1226. Desaturation events identified "
+                "by peak prominence (>=3%) in the SpO2 signal without requiring manually scored "
+                "respiratory events. Each event's baseline defined by flanking left and right SpO2 "
+                "peaks, with area calculated between the peak-connecting line and the SpO2 trace.",
+                self.styles['Normal']
+            ))
+        else:
+            story.append(Paragraph(
+                "<b>Obstructive Hypoxic Burden:</b> Event-specific method from Azarbarzin et al., "
+                "European Heart Journal 2019;40:1149-1157. Calculates area under desaturation "
+                "curve for each apnea/hypopnea event.",
+                self.styles['Normal']
+            ))
         story.append(Spacer(1, 0.1*inch))
         
         if results.get('global_hb') is not None:
-            story.append(Paragraph(
-                "<b>Global Hypoxic Burden:</b> Total desaturation area below baseline over entire "
-                f"sleep study. Baseline automatically calculated as 95th percentile of SpO₂ "
-                f"({results['baseline_used']:.1f}%) to exclude desaturation outliers.",
-                self.styles['Normal']
-            ))
+            bl_method = results.get('baseline_method', 'stage_specific')
+
+            if bl_method == 'floating':
+                window_min = results.get('floating_window_sec', 600) // 60
+                story.append(Paragraph(
+                    f"<b>Global Hypoxic Burden:</b> Total desaturation area below a floating "
+                    f"baseline over entire sleep study. The floating baseline uses a trailing "
+                    f"{window_min}-minute window: bottom 25% of SpO2 values are removed, then "
+                    f"the 95th percentile of the remaining values is used. This adapts to local "
+                    f"SpO2 conditions without requiring sleep staging data. "
+                    f"Mean baseline: {results['baseline_used']:.1f}%.",
+                    self.styles['Normal']
+                ))
+            elif bl_method == 'stage_specific':
+                stage_baselines = results.get('stage_baselines', {})
+                if stage_baselines:
+                    bl_details = ", ".join(
+                        f"{s}: {stage_baselines[s]:.1f}%"
+                        for s in ['W', 'N1', 'N2', 'N3', 'REM']
+                        if s in stage_baselines
+                    )
+                    story.append(Paragraph(
+                        "<b>Global Hypoxic Burden:</b> Total desaturation area below stage-specific "
+                        "baselines over entire sleep study. Baselines derived from 95th percentile of "
+                        "SpO2 in event-free 30s epochs per sleep stage, avoiding contamination by "
+                        f"respiratory event desaturations. Weighted avg baseline: "
+                        f"{results['baseline_used']:.1f}%. Stage baselines: {bl_details}.",
+                        self.styles['Normal']
+                    ))
+                else:
+                    story.append(Paragraph(
+                        "<b>Global Hypoxic Burden:</b> Total desaturation area below baseline over entire "
+                        f"sleep study. Baseline automatically calculated as 95th percentile of SpO2 "
+                        f"({results['baseline_used']:.1f}%) to exclude desaturation outliers.",
+                        self.styles['Normal']
+                    ))
+            else:  # whole_night
+                story.append(Paragraph(
+                    "<b>Global Hypoxic Burden:</b> Total desaturation area below baseline over entire "
+                    f"sleep study. Whole-night baseline calculated as 95th percentile of SpO2 "
+                    f"({results['baseline_used']:.1f}%).",
+                    self.styles['Normal']
+                ))
             story.append(Spacer(1, 0.1*inch))
         
         if results.get('use_mit_st'):
