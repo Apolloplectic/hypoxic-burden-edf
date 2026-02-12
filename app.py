@@ -12,6 +12,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import plotly.graph_objects as go
 import os
 from datetime import datetime
 import io
@@ -159,7 +160,24 @@ PRESETS = {
         'desat_threshold': 3,
         'artifact_filter': 'Off',
         'preset_baseline': 0.0,
+        'use_global_hb': True,
+        'baseline_method': 'stage_specific',
+        'floating_window_sec': 600,
+        'method': 'azarbarzin',
         'description': "Exact parameters from Azarbarzin et al. EHJ 2019"
+    },
+    "Parekh 2023 (Automated)": {
+        'pre_event_sec': 0,
+        'desat_start_sec': 0,
+        'desat_end_sec': 0,
+        'desat_threshold': 3,
+        'artifact_filter': 'Off',
+        'preset_baseline': 0.0,
+        'use_global_hb': True,
+        'baseline_method': 'stage_specific',
+        'floating_window_sec': 600,
+        'method': 'parekh',
+        'description': "Parekh et al. AJRCCM 2023 \u2014 automated SpO\u2082 nadir detection with peak-prominence baselines"
     },
     "AASM 2023 Standard": {
         'pre_event_sec': 120,
@@ -168,6 +186,10 @@ PRESETS = {
         'desat_threshold': 3,
         'artifact_filter': 'Mild (10%/s)',
         'preset_baseline': 0.0,
+        'use_global_hb': True,
+        'baseline_method': 'stage_specific',
+        'floating_window_sec': 600,
+        'method': 'azarbarzin',
         'description': "Current clinical practice guidelines"
     },
     "Conservative (High Specificity)": {
@@ -177,6 +199,10 @@ PRESETS = {
         'desat_threshold': 4,
         'artifact_filter': 'Strict (5%/s)',
         'preset_baseline': 0.0,
+        'use_global_hb': True,
+        'baseline_method': 'stage_specific',
+        'floating_window_sec': 600,
+        'method': 'azarbarzin',
         'description': "Minimizes false positives (4% threshold)"
     },
     "Aggressive (High Sensitivity)": {
@@ -186,6 +212,10 @@ PRESETS = {
         'desat_threshold': 3,
         'artifact_filter': 'Off',
         'preset_baseline': 0.0,
+        'use_global_hb': True,
+        'baseline_method': 'stage_specific',
+        'floating_window_sec': 600,
+        'method': 'azarbarzin',
         'description': "Maximizes event detection"
     },
     "Custom": {
@@ -195,6 +225,10 @@ PRESETS = {
         'desat_threshold': 3,
         'artifact_filter': 'Off',
         'preset_baseline': 0.0,
+        'use_global_hb': True,
+        'baseline_method': 'stage_specific',
+        'floating_window_sec': 600,
+        'method': 'azarbarzin',
         'description': "Manually configure all parameters"
     }
 }
@@ -409,47 +443,148 @@ if edf_file is not None:
                 )
             
             if params['use_global_hb']:
-                baseline_method = st.radio(
-                    "Baseline SpO₂ method",
-                    ["Automatic (95th percentile)", "Manual entry"],
-                    help="Auto removes outliers/desaturations"
+                baseline_method_choice = st.radio(
+                    "Global HB Baseline Method",
+                    [
+                        "Stage-specific (event-free epochs)",
+                        "Floating (trailing window)",
+                        "Whole-night (single value)",
+                        "Manual entry"
+                    ],
+                    help="How to determine the baseline SpO\u2082 for global burden calculation"
                 )
-                
-                if baseline_method == "Manual entry":
+
+                if baseline_method_choice == "Manual entry":
                     params['preset_baseline'] = st.slider(
-                        "Baseline SpO₂ (%)",
-                        min_value=80.0,
-                        max_value=100.0,
-                        value=95.0,
-                        step=0.1,
-                        format="%.1f"
+                        "Baseline SpO\u2082 (%)",
+                        min_value=80.0, max_value=100.0,
+                        value=95.0, step=0.1, format="%.1f"
                     )
+                    params['baseline_method'] = 'stage_specific'  # irrelevant when manual
+                elif baseline_method_choice.startswith("Floating"):
+                    params['preset_baseline'] = 0.0
+                    params['baseline_method'] = 'floating'
+                    params['floating_window_sec'] = st.slider(
+                        "Trailing window (minutes)",
+                        min_value=2, max_value=30, value=10, step=1,
+                        help="Duration of the trailing SpO\u2082 window. "
+                             "Bottom 25% of values in each window are excluded "
+                             "before taking the 95th percentile."
+                    ) * 60  # Convert minutes to seconds
+                elif baseline_method_choice.startswith("Whole"):
+                    params['preset_baseline'] = 0.0
+                    params['baseline_method'] = 'whole_night'
                 else:
                     params['preset_baseline'] = 0.0
+                    params['baseline_method'] = 'stage_specific'
             else:
                 params['preset_baseline'] = 0.0
+                params['baseline_method'] = 'stage_specific'
         
-        else:
-            # Show preset values (read-only)
+        elif params.get('method') == 'parekh':
+            # Parekh-specific read-only display
             st.markdown("#### 📋 Preset Configuration")
-            
+
+            st.markdown("##### Parekh 2023 — Automated SpO\u2082 Method:")
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.write("**Method:** Automated SpO\u2082 nadir detection")
+                st.write(f"**Nadir prominence:** \u2265{params['desat_threshold']}% drop")
+                st.write("**Baseline:** Flanking left/right SpO\u2082 peaks per event")
+
+            with col2:
+                st.write("**Smoothing:** Savitzky-Golay filter (11s window)")
+                st.write(f"**Artifact filter:** {params['artifact_filter']}")
+                st.write("**Min event duration:** 4 seconds")
+
+            st.markdown("##### Global HB Parameters:")
+            st.caption(
+                "\u2139\ufe0f Note: This method does NOT use airflow-based respiratory event detection. "
+                "Desaturation events are identified directly from the SpO\u2082 signal using "
+                "peak prominence. Each event has its own baseline defined by flanking peaks."
+            )
+
+            # Baseline method selector (shared across all presets)
+            bl_method = st.radio(
+                "Global HB Baseline Method",
+                ["Stage-specific (event-free epochs)", "Floating (trailing window)", "Whole-night (single value)"],
+                help="How to determine the baseline SpO\u2082 for global burden calculation",
+                key="parekh_bl_method"
+            )
+            if bl_method.startswith("Floating"):
+                params['baseline_method'] = 'floating'
+                params['floating_window_sec'] = st.slider(
+                    "Trailing window (minutes)", min_value=2, max_value=30,
+                    value=10, step=1, key="parekh_float_win",
+                    help="Bottom 25% of values excluded, then 95th percentile of remainder."
+                ) * 60
+            elif bl_method.startswith("Whole"):
+                params['baseline_method'] = 'whole_night'
+            else:
+                params['baseline_method'] = 'stage_specific'
+
+        else:
+            # Show preset values (read-only) — Azarbarzin-family presets
+            st.markdown("#### 📋 Preset Configuration")
+
             st.markdown("##### Event-Specific HB Parameters:")
             col1, col2 = st.columns(2)
-            
+
             with col1:
                 st.write(f"**Pre-event baseline:** {params['pre_event_sec']}s before START")
-                st.write(f"**Baseline method:** MAXIMUM SpO₂ (per Azarbarzin)")
+                st.write(f"**Baseline method:** MAXIMUM SpO\u2082 (per Azarbarzin)")
                 st.write(f"**Desat start offset:** {params['desat_start_sec']}s from START")
-            
+
             with col2:
                 st.write(f"**Desat end:** {params['desat_end_sec']}s after end")
                 st.write(f"**Artifact filter:** {params['artifact_filter']}")
                 st.write(f"**Desat threshold:** {params['desat_threshold']}%")
-            
+
             st.markdown("##### Global HB Parameters:")
-            baseline_text = 'Auto (95th percentile)' if params['preset_baseline'] == 0 else f'{params["preset_baseline"]:.1f}%'
-            st.write(f"**Global baseline:** {baseline_text} (for whole-study burden)")
-            st.caption("ℹ️ Note: Event-specific HB uses MAXIMUM in 100s before each event. Global HB uses this baseline for entire study.")
+
+            # Baseline method selector (shared across all presets)
+            bl_method = st.radio(
+                "Global HB Baseline Method",
+                ["Stage-specific (event-free epochs)", "Floating (trailing window)", "Whole-night (single value)"],
+                help="How to determine the baseline SpO\u2082 for global burden calculation",
+                key="azarbarzin_bl_method"
+            )
+            if bl_method.startswith("Floating"):
+                params['baseline_method'] = 'floating'
+                params['floating_window_sec'] = st.slider(
+                    "Trailing window (minutes)", min_value=2, max_value=30,
+                    value=10, step=1, key="az_float_win",
+                    help="Bottom 25% of values excluded, then 95th percentile of remainder."
+                ) * 60
+            elif bl_method.startswith("Whole"):
+                params['baseline_method'] = 'whole_night'
+            else:
+                params['baseline_method'] = 'stage_specific'
+
+            if params['baseline_method'] == 'floating':
+                window_min = params.get('floating_window_sec', 600) // 60
+                bl_note = (
+                    f"Global HB uses a **floating baseline**: a trailing {window_min}-minute window "
+                    "where the bottom 25% of SpO\u2082 values are removed, then the 95th percentile "
+                    "of the remainder is used. This adapts to local SpO\u2082 conditions without "
+                    "requiring sleep staging."
+                )
+            elif params['baseline_method'] == 'whole_night':
+                bl_note = (
+                    "Global HB uses a **whole-night baseline**: the 95th percentile of all "
+                    "SpO\u2082 values across the entire recording, giving a single fixed reference."
+                )
+            else:
+                bl_note = (
+                    "Global HB uses **stage-specific baselines**: the 95th percentile of SpO\u2082 "
+                    "from event-free 30s epochs within each sleep stage, avoiding contamination "
+                    "by respiratory event desaturations."
+                )
+            st.caption(
+                f"\u2139\ufe0f Event-specific HB uses MAXIMUM SpO\u2082 in 100s before each event. "
+                + bl_note
+            )
         
         
         # Store in session state
@@ -514,18 +649,30 @@ if edf_file is not None:
                     status.text(f"Analyzing with {preset_name}... ({idx+1}/{len(st.session_state.comparison_presets)})")
                     
                     preset_params = PRESETS[preset_name]
-                    
-                    results = analyzer.run_full_analysis(
-                        pre_event_sec=preset_params['pre_event_sec'],
-                        desat_start_sec=preset_params['desat_start_sec'],
-                        desat_end_sec=preset_params['desat_end_sec'],
-                        artifact_filter=preset_params['artifact_filter'],
-                        desat_threshold=preset_params['desat_threshold'],
-                        use_global_hb=True,
-                        preset_baseline=preset_params['preset_baseline'],
-                        use_mit_st=st.session_state.use_mit_st
-                    )
-                    
+
+                    if preset_params.get('method') == 'parekh':
+                        results = analyzer.run_parekh_analysis(
+                            artifact_filter=preset_params['artifact_filter'],
+                            desat_threshold=preset_params['desat_threshold'],
+                            use_global_hb=True,
+                            use_mit_st=st.session_state.use_mit_st,
+                            baseline_method=preset_params.get('baseline_method', 'stage_specific'),
+                            floating_window_sec=preset_params.get('floating_window_sec', 600)
+                        )
+                    else:
+                        results = analyzer.run_full_analysis(
+                            pre_event_sec=preset_params['pre_event_sec'],
+                            desat_start_sec=preset_params['desat_start_sec'],
+                            desat_end_sec=preset_params['desat_end_sec'],
+                            artifact_filter=preset_params['artifact_filter'],
+                            desat_threshold=preset_params['desat_threshold'],
+                            use_global_hb=True,
+                            preset_baseline=preset_params['preset_baseline'],
+                            use_mit_st=st.session_state.use_mit_st,
+                            baseline_method=preset_params.get('baseline_method', 'stage_specific'),
+                            floating_window_sec=preset_params.get('floating_window_sec', 600)
+                        )
+
                     comparison_results[preset_name] = results
                     progress_bar.progress((idx + 1) / len(st.session_state.comparison_presets))
                 
@@ -783,18 +930,30 @@ if edf_file is not None:
             st.markdown("### 📊 Detailed Results (First Preset)")
         else:
             # Regular single analysis
-            # Run analysis
+            # Run analysis — route to Parekh or Azarbarzin pipeline
             with st.spinner("🔬 Analyzing PSG data..."):
-                results = analyzer.run_full_analysis(
-                    pre_event_sec=pre_event_sec,
-                    desat_start_sec=desat_start_sec,
-                    desat_end_sec=desat_end_sec,
-                    artifact_filter=artifact_filter,
-                    desat_threshold=desat_threshold,
-                    use_global_hb=True,  # Always calculate Global HB
-                    preset_baseline=preset_baseline,
-                    use_mit_st=st.session_state.use_mit_st
-                )
+                if params.get('method') == 'parekh':
+                    results = analyzer.run_parekh_analysis(
+                        artifact_filter=artifact_filter,
+                        desat_threshold=desat_threshold,
+                        use_global_hb=True,
+                        use_mit_st=st.session_state.use_mit_st,
+                        baseline_method=params.get('baseline_method', 'stage_specific'),
+                        floating_window_sec=params.get('floating_window_sec', 600)
+                    )
+                else:
+                    results = analyzer.run_full_analysis(
+                        pre_event_sec=pre_event_sec,
+                        desat_start_sec=desat_start_sec,
+                        desat_end_sec=desat_end_sec,
+                        artifact_filter=artifact_filter,
+                        desat_threshold=desat_threshold,
+                        use_global_hb=True,
+                        preset_baseline=preset_baseline,
+                        use_mit_st=st.session_state.use_mit_st,
+                        baseline_method=params.get('baseline_method', 'stage_specific'),
+                        floating_window_sec=params.get('floating_window_sec', 600)
+                    )
         
         # --------------------------------------------------------------
         # SAVE TO SESSION HISTORY (Feature #6)
@@ -804,7 +963,15 @@ if edf_file is not None:
         # Display results
         st.markdown("---")
         st.subheader("📊 Analysis Results")
-        
+
+        # Show method badge if Parekh
+        if results.get('method') == 'parekh':
+            st.info(
+                "🔬 **Method: Parekh 2023 (Automated)** — Desaturation events detected via "
+                f"SpO\u2082 peak prominence (\u2265{desat_threshold}%). "
+                f"Detected {results.get('parekh_events_count', 0)} desaturation events."
+            )
+
         # --------------------------------------------------------------
         # COMPARISON WITH PREVIOUS (Feature #6)
         # --------------------------------------------------------------
@@ -860,24 +1027,184 @@ if edf_file is not None:
             risk_color = "🟢"
         
         st.markdown(f"### {risk_color} Risk Level: **{risk_level}**")
-        
+
+        # -----------------------------------------------------------
+        # INTERACTIVE SpO₂ TRACE (Plotly)
+        # -----------------------------------------------------------
+        if analyzer.df_spo2 is not None:
+            st.markdown("---")
+            st.subheader("📈 SpO\u2082 Signal Trace")
+
+            spo2_df = analyzer.df_spo2.copy()
+            spo2_times_h = spo2_df['time'] / 3600  # Convert to hours
+
+            fig_spo2 = go.Figure()
+
+            # Main SpO₂ trace
+            fig_spo2.add_trace(go.Scattergl(
+                x=spo2_times_h,
+                y=spo2_df['spo2'],
+                mode='lines',
+                name='SpO\u2082',
+                line=dict(color='#1f77b4', width=1),
+                hovertemplate='Time: %{x:.2f}h<br>SpO\u2082: %{y:.1f}%<extra></extra>'
+            ))
+
+            # Add floating baseline trace if available
+            if results.get('floating_baseline') is not None:
+                fb_arr = results['floating_baseline']
+                # floating_baseline length matches df_spo2 length
+                if len(fb_arr) == len(spo2_times_h):
+                    fig_spo2.add_trace(go.Scattergl(
+                        x=spo2_times_h,
+                        y=fb_arr,
+                        mode='lines',
+                        name='Floating Baseline',
+                        line=dict(color='green', width=1.5, dash='dash'),
+                        hovertemplate='Time: %{x:.2f}h<br>Baseline: %{y:.1f}%<extra></extra>'
+                    ))
+            elif results.get('baseline_used'):
+                # Static baseline reference line
+                fig_spo2.add_hline(
+                    y=results['baseline_used'],
+                    line_dash="dash",
+                    line_color="green",
+                    annotation_text=f"Baseline: {results['baseline_used']:.1f}%",
+                    annotation_position="top left"
+                )
+
+            # Add desaturation threshold reference (only for static baselines)
+            if results.get('baseline_used') and results.get('floating_baseline') is None:
+                desat_line = results['baseline_used'] - desat_threshold
+                fig_spo2.add_hline(
+                    y=desat_line,
+                    line_dash="dot",
+                    line_color="orange",
+                    annotation_text=f"{desat_threshold}% desat threshold",
+                    annotation_position="bottom left",
+                    opacity=0.5
+                )
+
+            fig_spo2.update_layout(
+                xaxis_title="Time (hours)",
+                yaxis_title="SpO\u2082 (%)",
+                yaxis=dict(range=[60, 102]),
+                height=400,
+                margin=dict(l=50, r=20, t=30, b=50),
+                hovermode='x unified',
+                template='plotly_white',
+                legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+            )
+
+            # Enable range slider for zooming
+            fig_spo2.update_xaxes(rangeslider_visible=True, rangeslider_thickness=0.08)
+
+            st.plotly_chart(fig_spo2, use_container_width=True)
+
+            # Signal quality summary
+            spo2_vals = spo2_df['spo2'].values
+            with st.expander("Signal Quality Summary"):
+                q_col1, q_col2, q_col3 = st.columns(3)
+                with q_col1:
+                    st.metric("Mean SpO\u2082", f"{np.nanmean(spo2_vals):.1f}%")
+                    st.metric("Median SpO\u2082", f"{np.nanmedian(spo2_vals):.1f}%")
+                with q_col2:
+                    st.metric("Min SpO\u2082", f"{np.nanmin(spo2_vals):.1f}%")
+                    st.metric("Std Dev", f"{np.nanstd(spo2_vals):.2f}%")
+                with q_col3:
+                    time_below_90 = np.sum(spo2_vals < 90) / len(spo2_vals) * 100
+                    time_below_88 = np.sum(spo2_vals < 88) / len(spo2_vals) * 100
+                    st.metric("Time <90%", f"{time_below_90:.1f}%")
+                    st.metric("Time <88%", f"{time_below_88:.1f}%")
+
         # Global HB (if calculated)
         if results.get('global_hb') is not None:
             st.markdown("---")
             st.subheader("🌍 Global Hypoxic Burden")
+
+            bl_method = results.get('baseline_method', 'stage_specific')
+
             col1, col2 = st.columns(2)
             with col1:
+                bl_method_labels = {
+                    'stage_specific': 'stage-specific baselines',
+                    'floating': f"floating baseline ({results.get('floating_window_sec', 600) // 60} min window)",
+                    'whole_night': 'whole-night baseline'
+                }
                 st.metric(
                     "Global HB",
                     f"{results['global_hb']:.2f} (%min)/h",
-                    help="Total oxygen debt over entire sleep study"
+                    help=f"Total oxygen debt over entire sleep study using {bl_method_labels.get(bl_method, bl_method)}"
                 )
             with col2:
-                st.metric(
-                    "Baseline SpO₂",
-                    f"{results['baseline_used']:.1f}%",
-                    help="SpO₂ baseline used for calculation"
-                )
+                if bl_method == 'floating':
+                    fb_arr = results.get('floating_baseline')
+                    if fb_arr is not None:
+                        mean_bl = np.nanmean(fb_arr)
+                        st.metric(
+                            "Mean Floating Baseline",
+                            f"{mean_bl:.1f}%",
+                            help=f"Average of the trailing {results.get('floating_window_sec', 600) // 60}-min floating baseline across the study"
+                        )
+                    else:
+                        st.metric("Baseline SpO\u2082", f"{results['baseline_used']:.1f}%")
+                else:
+                    bl_help = "Duration-weighted average of stage-specific baselines" if bl_method == 'stage_specific' else "95th percentile of SpO\u2082 across entire study"
+                    st.metric(
+                        "Baseline SpO\u2082",
+                        f"{results['baseline_used']:.1f}%",
+                        help=bl_help
+                    )
+
+            # Show baseline details in expandable section
+            if bl_method == 'floating':
+                fb_arr = results.get('floating_baseline')
+                if fb_arr is not None:
+                    with st.expander("View Floating Baseline Details"):
+                        fb_col1, fb_col2, fb_col3 = st.columns(3)
+                        with fb_col1:
+                            st.metric("Mean", f"{np.nanmean(fb_arr):.1f}%")
+                        with fb_col2:
+                            st.metric("Min", f"{np.nanmin(fb_arr):.1f}%")
+                        with fb_col3:
+                            st.metric("Max", f"{np.nanmax(fb_arr):.1f}%")
+                        window_min = results.get('floating_window_sec', 600) // 60
+                        st.caption(
+                            f"Floating baseline: trailing {window_min}-min window, "
+                            "bottom 25% of values removed, then 95th percentile of remainder. "
+                            "Adapts to local SpO\u2082 conditions without requiring sleep staging."
+                        )
+
+            elif bl_method == 'stage_specific':
+                stage_baselines = results.get('stage_baselines', {})
+                if stage_baselines:
+                    with st.expander("View Stage-Specific Baselines"):
+                        fallback_bl = results.get('fallback_baseline', 0)
+                        bl_data = []
+                        for stage in ['W', 'N1', 'N2', 'N3', 'REM']:
+                            if stage in stage_baselines:
+                                bl_val = stage_baselines[stage]
+                                source = "Event-free epochs" if abs(bl_val - fallback_bl) > 0.01 else "Fallback (whole-night)"
+                                bl_data.append({
+                                    'Stage': stage,
+                                    'Baseline SpO\u2082 (%)': f"{bl_val:.1f}",
+                                    'Source': source
+                                })
+                        if bl_data:
+                            df_bl = pd.DataFrame(bl_data)
+                            st.dataframe(df_bl, use_container_width=True, hide_index=True)
+                        st.caption(
+                            "Baselines derived from 95th percentile of SpO\u2082 in event-free "
+                            "30s epochs per stage. Stages with no event-free epochs use the "
+                            f"whole-night 95th percentile ({fallback_bl:.1f}%)."
+                        )
+
+            else:  # whole_night
+                with st.expander("View Baseline Details"):
+                    st.caption(
+                        f"Whole-night baseline: 95th percentile of all SpO\u2082 values = "
+                        f"{results['baseline_used']:.1f}%."
+                    )
         
         # Stage-specific results
         if results['stage_hb']:
@@ -1148,29 +1475,53 @@ elif analysis_mode == "Treatment Comparison (Before/After)" and pre_treatment_fi
         
         # Analyze pre-treatment
         with st.spinner("🔬 Analyzing pre-treatment PSG..."):
-            results_pre = analyzer_pre.run_full_analysis(
-                pre_event_sec=params['pre_event_sec'],
-                desat_start_sec=params['desat_start_sec'],
-                desat_end_sec=params['desat_end_sec'],
-                artifact_filter=params['artifact_filter'],
-                desat_threshold=params['desat_threshold'],
-                use_global_hb=True,
-                preset_baseline=params['preset_baseline'],
-                use_mit_st=st.session_state.use_mit_st
-            )
-        
+            if params.get('method') == 'parekh':
+                results_pre = analyzer_pre.run_parekh_analysis(
+                    artifact_filter=params['artifact_filter'],
+                    desat_threshold=params['desat_threshold'],
+                    use_global_hb=True,
+                    use_mit_st=st.session_state.use_mit_st,
+                    baseline_method=params.get('baseline_method', 'stage_specific'),
+                    floating_window_sec=params.get('floating_window_sec', 600)
+                )
+            else:
+                results_pre = analyzer_pre.run_full_analysis(
+                    pre_event_sec=params['pre_event_sec'],
+                    desat_start_sec=params['desat_start_sec'],
+                    desat_end_sec=params['desat_end_sec'],
+                    artifact_filter=params['artifact_filter'],
+                    desat_threshold=params['desat_threshold'],
+                    use_global_hb=True,
+                    preset_baseline=params['preset_baseline'],
+                    use_mit_st=st.session_state.use_mit_st,
+                    baseline_method=params.get('baseline_method', 'stage_specific'),
+                    floating_window_sec=params.get('floating_window_sec', 600)
+                )
+
         # Analyze post-treatment
         with st.spinner("🔬 Analyzing post-treatment PSG..."):
-            results_post = analyzer_post.run_full_analysis(
-                pre_event_sec=params['pre_event_sec'],
-                desat_start_sec=params['desat_start_sec'],
-                desat_end_sec=params['desat_end_sec'],
-                artifact_filter=params['artifact_filter'],
-                desat_threshold=params['desat_threshold'],
-                use_global_hb=True,
-                preset_baseline=params['preset_baseline'],
-                use_mit_st=st.session_state.use_mit_st
-            )
+            if params.get('method') == 'parekh':
+                results_post = analyzer_post.run_parekh_analysis(
+                    artifact_filter=params['artifact_filter'],
+                    desat_threshold=params['desat_threshold'],
+                    use_global_hb=True,
+                    use_mit_st=st.session_state.use_mit_st,
+                    baseline_method=params.get('baseline_method', 'stage_specific'),
+                    floating_window_sec=params.get('floating_window_sec', 600)
+                )
+            else:
+                results_post = analyzer_post.run_full_analysis(
+                    pre_event_sec=params['pre_event_sec'],
+                    desat_start_sec=params['desat_start_sec'],
+                    desat_end_sec=params['desat_end_sec'],
+                    artifact_filter=params['artifact_filter'],
+                    desat_threshold=params['desat_threshold'],
+                    use_global_hb=True,
+                    preset_baseline=params['preset_baseline'],
+                    use_mit_st=st.session_state.use_mit_st,
+                    baseline_method=params.get('baseline_method', 'stage_specific'),
+                    floating_window_sec=params.get('floating_window_sec', 600)
+                )
         
         # Display comparison results
         st.markdown("---")
@@ -1604,7 +1955,9 @@ if batch_files:
                     desat_threshold=desat_thresh_val,
                     use_global_hb=batch_use_global_hb,
                     preset_baseline=0.0,
-                    use_mit_st=False
+                    use_mit_st=False,
+                    baseline_method='stage_specific',
+                    floating_window_sec=600
                 )
                 
                 # Generate PDF (if available)
@@ -1654,7 +2007,7 @@ if batch_files:
         if PDF_AVAILABLE and len(st.session_state.batch_results) > 0:
             pdf_generator = PDFReportGenerator()
             master_buffer = pdf_generator.generate_batch_summary(batch_summary_data)
-        
+
             # Create ZIP file
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -1664,26 +2017,27 @@ if batch_files:
                         f"Reports/HB_Report_{filename.replace('.edf', '')}.pdf",
                         pdf_buffer.getvalue()
                     )
-                
+
                 # Add master summary
-            zf.writestr("Master_Summary.pdf", master_buffer.getvalue())
-        
-        zip_buffer.seek(0)
-        
+                zf.writestr("Master_Summary.pdf", master_buffer.getvalue())
+
+            zip_buffer.seek(0)
+
         # Success message
         progress_bar.progress(1.0)
         status_text.text("✅ Batch processing complete!")
-        st.success(f"**Batch Complete!** Generated {len(st.session_state.batch_results)} reports.")
-        
-        # Download button
-        st.download_button(
-            label=f"⬇️ Download All Reports ({len(st.session_state.batch_results)} files)",
-            data=zip_buffer.getvalue(),
-            file_name=f"HB_Batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-            mime="application/zip",
-            type="primary",
-            use_container_width=True
-        )
+        st.success(f"**Batch Complete!** Processed {len(batch_summary_data)} files.")
+
+        # Download button (only if ZIP was generated)
+        if PDF_AVAILABLE and len(st.session_state.batch_results) > 0:
+            st.download_button(
+                label=f"⬇️ Download All Reports ({len(st.session_state.batch_results)} files)",
+                data=zip_buffer.getvalue(),
+                file_name=f"HB_Batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                mime="application/zip",
+                type="primary",
+                use_container_width=True
+            )
         
         # Reset batch state
         for key in ['batch_running', 'batch_paused', 'batch_progress', 'batch_files_processed']:
