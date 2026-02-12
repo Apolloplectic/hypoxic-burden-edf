@@ -50,8 +50,28 @@ def load_edf_file(uploaded_file, filename="temp_upload.edf"):
             os.close(fd)
             raise
 
-        # Load with MNE
-        raw = mne.io.read_raw_edf(temp_path, preload=True, verbose=False)
+        # Load with MNE — preload=False to avoid allocating all channels upfront.
+        # Large files (23 channels × high sfreq × hours) can exceed available RAM
+        # when preloaded as float64. We load lazily, then selectively preload
+        # only the channels the analyzer needs.
+        raw = mne.io.read_raw_edf(temp_path, preload=False, verbose=False)
+
+        # Determine which channels we actually need (SpO₂ required; flow, EEG,
+        # EOG, EMG optional). Load only those to keep memory footprint small.
+        from config import CHANNEL_PATTERNS
+        needed = []
+        for _category, patterns in CHANNEL_PATTERNS.items():
+            ch = detect_channel(raw.ch_names, patterns)
+            if ch and ch not in needed:
+                needed.append(ch)
+
+        if needed:
+            try:
+                raw.pick(needed)
+            except Exception:
+                pass  # If pick fails, fall through to full preload
+
+        raw.load_data(verbose=False)
 
         return raw, temp_path
 
@@ -62,23 +82,29 @@ def load_edf_file(uploaded_file, filename="temp_upload.edf"):
 
 def detect_channel(channel_list, patterns):
     """
-    Detect a channel from a list based on name patterns
-    
+    Detect a channel from a list based on name patterns.
+
+    Iterates patterns first (in priority order), then channels.
+    This ensures higher-priority patterns (e.g., central EEG channels
+    for sleep staging) are matched before lower-priority ones, regardless
+    of channel ordering in the EDF file.
+
     Parameters:
     -----------
     channel_list : list
-        List of channel names
+        List of channel names from the EDF file
     patterns : list
-        List of string patterns to match
-    
+        List of string patterns to match, in priority order
+
     Returns:
     --------
     str or None
         Matched channel name or None
     """
-    for ch in channel_list:
-        if any(pattern.upper() in ch.upper() for pattern in patterns):
-            return ch
+    for pattern in patterns:
+        for ch in channel_list:
+            if pattern.upper() in ch.upper():
+                return ch
     return None
 
 
