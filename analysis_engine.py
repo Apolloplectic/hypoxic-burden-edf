@@ -52,6 +52,7 @@ class PSGAnalyzer:
         
         # Processed data
         self.df_spo2 = None
+        self.df_spo2_raw = None  # Pre-artifact-filter copy for visualization
         self.df_flow = None
         self.events_df = None
         self.odi_events = None
@@ -115,13 +116,20 @@ class PSGAnalyzer:
     
     def preprocess_spo2(self, artifact_filter='Off'):
         """
-        Preprocess SpO₂ signal
-        
+        Preprocess SpO₂ signal with physiological validation.
+
+        Steps:
+        1. Extract raw SpO₂ data
+        2. Clamp to physiological range [0, 100] and remove non-physiological values
+        3. Resample to 1 Hz (if higher sample rate)
+        4. Apply artifact filter (rate-of-change based) if enabled
+        5. Store raw (pre-artifact-filter) copy for visualization
+
         Parameters:
         -----------
         artifact_filter : str
             'Off', 'Mild (10%/s)', or 'Strict (5%/s)'
-        
+
         Returns:
         --------
         pd.DataFrame
@@ -129,43 +137,77 @@ class PSGAnalyzer:
         """
         # Extract SpO₂ data
         spo2_sig, spo2_times = self.raw[self.spo2_ch]
-        
+
         # Validate data
         if len(spo2_sig.flatten()) != len(spo2_times.flatten()):
             raise ValueError(f"SpO₂ data length mismatch: {len(spo2_sig.flatten())} samples vs {len(spo2_times.flatten())} timepoints")
-        
+
         df = pd.DataFrame({
             "time": spo2_times.flatten(),
             "spo2": spo2_sig.flatten()
         })
-        
+
         # Validate DataFrame
         if df.empty or len(df) == 0:
             raise ValueError("SpO₂ data is empty after extraction")
-        
+
+        # --- Physiological validation (ALWAYS applied) ---
+        # Mark non-physiological values as NaN (SpO₂ must be 0-100%)
+        n_before = len(df)
+        non_physio = (df['spo2'] < 0) | (df['spo2'] > 100)
+        n_non_physio = non_physio.sum()
+        if n_non_physio > 0:
+            logger.info("Removed %d non-physiological SpO₂ values (outside 0-100%%)", n_non_physio)
+            df.loc[non_physio, 'spo2'] = np.nan
+
+        # Also mark very low values (< 50%) as likely artifact/disconnection
+        very_low = df['spo2'] < 50
+        n_very_low = very_low.sum()
+        if n_very_low > 0:
+            logger.info("Marked %d SpO₂ values below 50%% as artifact", n_very_low)
+            df.loc[very_low, 'spo2'] = np.nan
+
+        # Interpolate over NaN gaps (up to 10 samples before resampling)
+        df['spo2'] = df['spo2'].interpolate(method='linear', limit=10)
+
+        # Drop any remaining NaN at edges
+        df = df.dropna(subset=['spo2']).reset_index(drop=True)
+
         # Resample to 1 Hz if needed
         if self.raw.info['sfreq'] != 1:
             df['time'] = pd.to_datetime(df['time'], unit='s')
             df = df.set_index('time').resample('1s').mean().interpolate(method='linear').reset_index()
             df['time'] = (df['time'] - df['time'].iloc[0]).dt.total_seconds()
-        
+
         # Validate after resampling
         if df.empty or len(df) == 0:
             raise ValueError("SpO₂ data is empty after resampling")
-        
-        # Apply artifact filter
+
+        # Clamp again after resampling (interpolation edge effects)
+        df['spo2'] = df['spo2'].clip(0, 100)
+
+        # Store raw (pre-artifact-filter) copy for visualization
+        df_raw = df.copy()
+
+        # --- Apply artifact filter (rate-of-change based) ---
         if artifact_filter != 'Off':
             max_rate = 10 if artifact_filter == "Mild (10%/s)" else 5
             df['rate'] = df['spo2'].diff().abs()
             df['artifact'] = df['rate'] > max_rate
-            
+
+            n_artifacts = df['artifact'].sum()
+            if n_artifacts > 0:
+                logger.info("Artifact filter (%s): marked %d samples as artifacts", artifact_filter, n_artifacts)
+
             # Mark artifacts as NaN
             df.loc[df['artifact'], 'spo2'] = np.nan
-            
+
             # Interpolate over artifacts
             df['spo2'] = df['spo2'].interpolate(method='linear', limit=5)
-        
+
+        # Store both versions
         self.df_spo2 = df
+        self.df_spo2_raw = df_raw  # For visualization (before artifact filtering)
         return df
     
     def detect_odi_events(self, desat_threshold=3):
@@ -745,48 +787,250 @@ class PSGAnalyzer:
         
         return area_total, proof_events
     
-    def calculate_global_hypoxic_burden(self, preset_baseline=0.0):
+    def _get_event_free_epochs(self):
         """
-        Calculate global hypoxic burden (whole-study area below baseline)
-        
+        Identify 30s epochs with no overlapping respiratory events.
+
+        An epoch is "event-free" if no detected apnea/hypopnea event's
+        [start, end] interval overlaps with the epoch's [epoch_start, epoch_end].
+
+        Returns:
+        --------
+        np.ndarray (bool)
+            Array of length n_epochs, True for event-free epochs
+        """
+        n_epochs = len(self.stages) if self.stages else int(self.df_spo2['time'].max() // 30)
+        event_free = np.ones(n_epochs, dtype=bool)
+
+        if self.events_df is not None and len(self.events_df) > 0:
+            for _, ev in self.events_df.iterrows():
+                # Mark all epochs overlapping this event as NOT event-free
+                ev_start_epoch = int(ev['start'] // 30)
+                ev_end_epoch = int(ev['end'] // 30)
+                for ei in range(max(0, ev_start_epoch), min(n_epochs, ev_end_epoch + 1)):
+                    event_free[ei] = False
+
+        return event_free
+
+    def _calculate_floating_baseline(self, window_sec=600, percentile=95,
+                                       lower_quartile_cutoff=25):
+        """
+        Calculate a floating (trailing) baseline for each SpO₂ sample.
+
+        For each timepoint, the baseline is computed from the trailing
+        window of SpO₂ values by:
+        1. Removing the lowest quartile (likely desaturation values)
+        2. Taking the Nth percentile of the remaining upper values
+
+        This provides a locally-adaptive baseline that tracks physiological
+        changes across sleep stages without requiring staging data.
+
+        Parameters:
+        -----------
+        window_sec : int
+            Trailing window duration in seconds (default 600 = 10 min)
+        percentile : float
+            Percentile to compute from the filtered window (default 95)
+        lower_quartile_cutoff : float
+            Bottom N% of values to exclude from each window (default 25)
+
+        Returns:
+        --------
+        np.ndarray
+            Floating baseline value for each SpO₂ sample
+        """
+        spo2_vals = self.df_spo2['spo2'].values
+        n = len(spo2_vals)
+        floating_bl = np.full(n, np.nan)
+
+        for i in range(n):
+            # Trailing window: [i - window_sec, i] at 1Hz
+            start_idx = max(0, i - window_sec)
+            window = spo2_vals[start_idx:i + 1]
+
+            if len(window) < 10:
+                # Too few samples — use what we have
+                floating_bl[i] = np.nanpercentile(window, percentile)
+                continue
+
+            # Remove bottom quartile (desaturation contamination)
+            cutoff_val = np.nanpercentile(window, lower_quartile_cutoff)
+            upper_vals = window[window >= cutoff_val]
+
+            if len(upper_vals) > 0:
+                floating_bl[i] = np.nanpercentile(upper_vals, percentile)
+            else:
+                floating_bl[i] = np.nanpercentile(window, percentile)
+
+        return floating_bl
+
+    def calculate_global_hypoxic_burden(self, preset_baseline=0.0,
+                                        baseline_method='stage_specific',
+                                        floating_window_sec=600):
+        """
+        Calculate global hypoxic burden.
+
+        Supports three baseline methods:
+        - 'stage_specific' (default): 95th percentile from event-free epochs
+          per sleep stage. Falls back to whole-night if no staging available.
+        - 'floating': Trailing 10-min window with bottom quartile removed,
+          then 95th percentile. Adapts locally without requiring staging.
+        - 'whole_night': Single 95th percentile across the entire study.
+
         Parameters:
         -----------
         preset_baseline : float
-            Manual baseline SpO₂. If 0, auto-calculate using 95th percentile
-        
+            Manual baseline SpO₂. If > 0, overrides all methods.
+        baseline_method : str
+            'stage_specific', 'floating', or 'whole_night'
+        floating_window_sec : int
+            Window size for floating baseline (default 600 = 10 min)
+
         Returns:
         --------
         dict
-            Global HB and baseline used
+            global_hb, baseline, area, stage_baselines, fallback_baseline,
+            baseline_method, floating_baseline (array, if method='floating')
         """
         if self.df_spo2 is None:
             raise ValueError("Must run preprocess_spo2() first")
-        
-        # Determine baseline
-        if preset_baseline > 0:
-            baseline = preset_baseline
-        else:
-            # Auto: 95th percentile (filters out desaturations)
-            baseline = calculate_robust_baseline(
-                self.df_spo2['spo2'].values,
-                method='percentile',
-                percentile=95
-            )
-        
-        # Calculate area below baseline (integral of max(baseline - SpO₂, 0))
-        depth_global = np.maximum(baseline - self.df_spo2['spo2'].values, 0)
-        global_desat_area = trapz(depth_global, self.df_spo2['time'].values)
 
-        total_sleep_sec = self.df_spo2['time'].max()
-        
-        # Convert to (%min)/h
+        spo2_vals = self.df_spo2['spo2'].values
+        spo2_times = self.df_spo2['time'].values
+
+        # Whole-night 95th percentile (always computed as reference/fallback)
+        fallback_baseline = calculate_robust_baseline(
+            spo2_vals, method='percentile', percentile=95
+        )
+
+        # If manual baseline is set, override everything
+        if preset_baseline > 0:
+            depth_global = np.maximum(preset_baseline - spo2_vals, 0)
+            global_desat_area = trapz(depth_global, spo2_times)
+            total_sleep_sec = spo2_times[-1] - spo2_times[0] if len(spo2_times) > 1 else spo2_times[-1]
+            total_hours = total_sleep_sec / 3600
+            global_hb = global_desat_area / 60 / total_hours if total_hours > 0 else 0
+            return {
+                'global_hb': global_hb,
+                'baseline': preset_baseline,
+                'area': global_desat_area,
+                'stage_baselines': {},
+                'fallback_baseline': preset_baseline,
+                'baseline_method': 'manual'
+            }
+
+        # ---- FLOATING BASELINE METHOD ----
+        if baseline_method == 'floating':
+            logger.info("Computing floating baseline (window=%ds)", floating_window_sec)
+            floating_bl = self._calculate_floating_baseline(
+                window_sec=floating_window_sec,
+                percentile=95,
+                lower_quartile_cutoff=25
+            )
+
+            # Integrate: max(floating_baseline[i] - spo2[i], 0) per sample
+            depth_global = np.maximum(floating_bl - spo2_vals, 0)
+            global_desat_area = trapz(depth_global, spo2_times)
+            total_sleep_sec = spo2_times[-1] - spo2_times[0] if len(spo2_times) > 1 else spo2_times[-1]
+            total_hours = total_sleep_sec / 3600
+            global_hb = global_desat_area / 60 / total_hours if total_hours > 0 else 0
+
+            # Summary baseline = mean of the floating baseline array
+            avg_bl = float(np.nanmean(floating_bl))
+
+            return {
+                'global_hb': global_hb,
+                'baseline': avg_bl,
+                'area': global_desat_area,
+                'stage_baselines': {},
+                'fallback_baseline': fallback_baseline,
+                'baseline_method': 'floating',
+                'floating_baseline': floating_bl,
+                'floating_window_sec': floating_window_sec
+            }
+
+        # ---- WHOLE-NIGHT BASELINE METHOD ----
+        if baseline_method == 'whole_night' or (
+            self.stages is None or len(self.stages) == 0
+        ):
+            depth_global = np.maximum(fallback_baseline - spo2_vals, 0)
+            global_desat_area = trapz(depth_global, spo2_times)
+            total_sleep_sec = spo2_times[-1] - spo2_times[0] if len(spo2_times) > 1 else spo2_times[-1]
+            total_hours = total_sleep_sec / 3600
+            global_hb = global_desat_area / 60 / total_hours if total_hours > 0 else 0
+            return {
+                'global_hb': global_hb,
+                'baseline': fallback_baseline,
+                'area': global_desat_area,
+                'stage_baselines': {},
+                'fallback_baseline': fallback_baseline,
+                'baseline_method': 'whole_night'
+            }
+
+        # ---- STAGE-SPECIFIC BASELINE METHOD (default) ----
+        event_free = self._get_event_free_epochs()
+        stage_baselines = {}
+
+        for stage in ['W', 'N1', 'N2', 'N3', 'REM']:
+            stage_ef_indices = [
+                i for i, s in enumerate(self.stages)
+                if s == stage and i < len(event_free) and event_free[i]
+            ]
+
+            if stage_ef_indices:
+                ef_spo2 = []
+                for ei in stage_ef_indices:
+                    epoch_start = ei * 30
+                    epoch_end = (ei + 1) * 30
+                    mask = (spo2_times >= epoch_start) & (spo2_times < epoch_end)
+                    ef_spo2.extend(spo2_vals[mask])
+
+                if len(ef_spo2) > 0:
+                    stage_baselines[stage] = calculate_robust_baseline(
+                        np.array(ef_spo2), method='percentile', percentile=95
+                    )
+                else:
+                    stage_baselines[stage] = fallback_baseline
+            else:
+                stage_baselines[stage] = fallback_baseline
+
+        # Integrate per-sample using stage-appropriate baseline
+        depth_global = np.zeros_like(spo2_vals, dtype=float)
+        n_stages = len(self.stages)
+
+        for i, t in enumerate(spo2_times):
+            epoch_idx = min(int(t // 30), n_stages - 1)
+            if epoch_idx >= 0 and epoch_idx < n_stages:
+                stage = self.stages[epoch_idx]
+            else:
+                stage = 'Unknown'
+            bl = stage_baselines.get(stage, fallback_baseline)
+            depth_global[i] = max(bl - spo2_vals[i], 0)
+
+        global_desat_area = trapz(depth_global, spo2_times)
+        total_sleep_sec = spo2_times[-1] - spo2_times[0] if len(spo2_times) > 1 else spo2_times[-1]
+
         total_hours = total_sleep_sec / 3600
         global_hb = global_desat_area / 60 / total_hours if total_hours > 0 else 0
-        
+
+        # Weighted average baseline for summary display
+        stage_counts = pd.Series(self.stages).value_counts()
+        total_staged_epochs = sum(stage_counts.get(s, 0) for s in stage_baselines)
+        if total_staged_epochs > 0:
+            weighted_bl = sum(
+                stage_baselines.get(s, fallback_baseline) * stage_counts.get(s, 0)
+                for s in stage_baselines
+            ) / total_staged_epochs
+        else:
+            weighted_bl = fallback_baseline
+
         return {
             'global_hb': global_hb,
-            'baseline': baseline,
-            'area': global_desat_area
+            'baseline': weighted_bl,
+            'area': global_desat_area,
+            'stage_baselines': stage_baselines,
+            'fallback_baseline': fallback_baseline,
+            'baseline_method': 'stage_specific'
         }
     
     def calculate_bootstrap_ci(self, n_boot=1000, pre_event_sec=100,
@@ -927,7 +1171,9 @@ class PSGAnalyzer:
     def run_full_analysis(self, pre_event_sec=100, desat_start_sec=0,
                          desat_end_sec=90, artifact_filter='Off',
                          desat_threshold=3, use_global_hb=True,
-                         preset_baseline=0.0, use_mit_st=False):
+                         preset_baseline=0.0, use_mit_st=False,
+                         baseline_method='stage_specific',
+                         floating_window_sec=600):
         """
         Run complete PSG analysis pipeline
         
@@ -988,7 +1234,11 @@ class PSGAnalyzer:
         # Step 7: Calculate global HB (if requested)
         global_hb_results = None
         if use_global_hb:
-            global_hb_results = self.calculate_global_hypoxic_burden(preset_baseline)
+            global_hb_results = self.calculate_global_hypoxic_burden(
+                preset_baseline=preset_baseline,
+                baseline_method=baseline_method,
+                floating_window_sec=floating_window_sec
+            )
         
         # Calculate metrics
         total_hours = self.raw.times[-1] / 3600
@@ -1012,5 +1262,422 @@ class PSGAnalyzer:
         if global_hb_results:
             results['global_hb'] = global_hb_results['global_hb']
             results['baseline_used'] = global_hb_results['baseline']
-        
+            results['stage_baselines'] = global_hb_results.get('stage_baselines', {})
+            results['fallback_baseline'] = global_hb_results.get('fallback_baseline', 0)
+            results['baseline_method'] = global_hb_results.get('baseline_method', 'stage_specific')
+            if 'floating_baseline' in global_hb_results:
+                results['floating_baseline'] = global_hb_results['floating_baseline']
+                results['floating_window_sec'] = global_hb_results.get('floating_window_sec', 600)
+
+        return results
+
+    # ==================================================================
+    # PAREKH 2023 METHOD — Automated SpO₂ nadir detection
+    # Parekh A et al. AJRCCM 2023;208(11):1216-1226
+    # ==================================================================
+
+    def _parekh_detect_desaturations(self, min_prominence=3.0, min_duration=4):
+        """
+        Detect desaturation events using Parekh peak-prominence method.
+
+        Identifies SpO₂ nadirs with ≥3% prominence and their flanking
+        left/right peaks. Does NOT require manually-scored respiratory
+        events — works directly on the SpO₂ signal.
+
+        Parameters:
+        -----------
+        min_prominence : float
+            Minimum SpO₂ drop (%) for a nadir to qualify (default 3.0)
+        min_duration : float
+            Minimum event duration in seconds (default 4)
+
+        Returns:
+        --------
+        list of dict
+            Each dict contains: nadir_idx, nadir_time, nadir_spo2,
+            left_peak_idx, left_peak_time, left_peak_spo2,
+            right_peak_idx, right_peak_time, right_peak_spo2
+        """
+        from scipy.signal import find_peaks, savgol_filter
+
+        spo2 = self.df_spo2['spo2'].values.copy()
+        times = self.df_spo2['time'].values
+
+        # Savitzky-Golay smoothing (window=11s at 1Hz, polyorder=3)
+        # Creates an interpolated continuous SpO₂ signal per Parekh method
+        win_len = min(11, len(spo2))
+        if win_len % 2 == 0:
+            win_len -= 1  # Must be odd
+        if win_len >= 5:
+            spo2_smooth = savgol_filter(spo2, window_length=win_len, polyorder=3)
+        else:
+            spo2_smooth = spo2.copy()
+
+        # Find nadirs: invert SpO₂ and find peaks with ≥ min_prominence
+        inverted = -spo2_smooth
+        peaks, properties = find_peaks(
+            inverted,
+            prominence=min_prominence,
+            distance=10  # At least 10s between nadirs
+        )
+
+        if len(peaks) == 0:
+            logger.info("Parekh: no desaturation nadirs found with ≥%.1f%% prominence",
+                        min_prominence)
+            return []
+
+        events = []
+        for i, nadir_idx in enumerate(peaks):
+            # Left peak: max SpO₂ between previous nadir (or signal start) and this nadir
+            left_bound = peaks[i - 1] if i > 0 else 0
+            left_region = spo2_smooth[left_bound:nadir_idx]
+            if len(left_region) == 0:
+                continue
+            left_peak_local = np.argmax(left_region)
+            left_peak_idx = left_bound + left_peak_local
+
+            # Right peak: max SpO₂ between this nadir and next nadir (or signal end)
+            right_bound = peaks[i + 1] if i < len(peaks) - 1 else len(spo2_smooth)
+            right_region = spo2_smooth[nadir_idx:right_bound]
+            if len(right_region) == 0:
+                continue
+            right_peak_local = np.argmax(right_region)
+            right_peak_idx = nadir_idx + right_peak_local
+
+            # Duration check (left peak → right peak)
+            duration = times[right_peak_idx] - times[left_peak_idx]
+            if duration < min_duration:
+                continue
+
+            events.append({
+                'nadir_idx': nadir_idx,
+                'nadir_time': times[nadir_idx],
+                'nadir_spo2': spo2_smooth[nadir_idx],
+                'left_peak_idx': left_peak_idx,
+                'left_peak_time': times[left_peak_idx],
+                'left_peak_spo2': spo2_smooth[left_peak_idx],
+                'right_peak_idx': right_peak_idx,
+                'right_peak_time': times[right_peak_idx],
+                'right_peak_spo2': spo2_smooth[right_peak_idx],
+            })
+
+        logger.info("Parekh: detected %d desaturation events (≥%.1f%% prominence)",
+                     len(events), min_prominence)
+        return events
+
+    def _parekh_calculate_hb(self, parekh_events):
+        """
+        Calculate HB using Parekh method: area between the line
+        connecting left/right peaks and the SpO₂ trace below it.
+
+        Parameters:
+        -----------
+        parekh_events : list of dict
+            Events from _parekh_detect_desaturations()
+
+        Returns:
+        --------
+        tuple (float, list)
+            total_area : total desaturation area (%-seconds)
+            proof_events : list of event dicts for visualization
+        """
+        spo2 = self.df_spo2['spo2'].values
+        times = self.df_spo2['time'].values
+        total_area = 0.0
+        proof_events = []
+
+        for ev in parekh_events:
+            li = ev['left_peak_idx']
+            ri = ev['right_peak_idx']
+
+            if ri <= li or ri >= len(spo2):
+                continue
+
+            segment_times = times[li:ri + 1]
+            segment_spo2 = spo2[li:ri + 1]
+
+            if len(segment_spo2) < 2:
+                continue
+
+            # Baseline: linear interpolation between left and right peaks
+            left_spo2 = ev['left_peak_spo2']
+            right_spo2 = ev['right_peak_spo2']
+            baseline_line = np.linspace(left_spo2, right_spo2, len(segment_spo2))
+
+            # Area = integral of max(baseline_line - SpO₂, 0)
+            depth = np.maximum(baseline_line - segment_spo2, 0)
+            area = trapz(depth, segment_times)
+            total_area += area
+
+            # Average baseline for this event (midpoint of peak line)
+            avg_baseline = (left_spo2 + right_spo2) / 2.0
+
+            # Store for proof plots (compatible with existing proof event format)
+            win_df = self.df_spo2[
+                (self.df_spo2['time'] >= times[li]) &
+                (self.df_spo2['time'] <= times[ri])
+            ].copy()
+
+            proof_events.append({
+                'start_t': ev['left_peak_time'],
+                'end_t': ev['right_peak_time'],
+                'baseline': avg_baseline,
+                'win_df': win_df,
+                'depth': depth,
+                'area': area,
+                'hb_contrib': area / 60
+            })
+
+        return total_area, proof_events
+
+    def _parekh_bootstrap_ci(self, parekh_events, n_boot=1000):
+        """
+        Calculate 95% confidence interval for Parekh HB via bootstrap.
+
+        Resamples the Parekh desaturation events and recomputes HB.
+
+        Parameters:
+        -----------
+        parekh_events : list of dict
+            Events from _parekh_detect_desaturations()
+        n_boot : int
+            Number of bootstrap iterations
+
+        Returns:
+        --------
+        tuple (float, float)
+            (ci_low, ci_high) at 2.5th and 97.5th percentiles
+        """
+        if len(parekh_events) == 0:
+            return (0.0, 0.0)
+
+        spo2 = self.df_spo2['spo2'].values
+        times = self.df_spo2['time'].values
+        total_hours = (times[-1] - times[0]) / 3600 if len(times) > 1 else times[-1] / 3600
+
+        if total_hours <= 0:
+            return (0.0, 0.0)
+
+        hb_values = []
+        n_events = len(parekh_events)
+
+        for _ in range(n_boot):
+            # Resample events with replacement
+            boot_indices = np.random.choice(n_events, size=n_events, replace=True)
+            boot_area = 0.0
+
+            for idx in boot_indices:
+                ev = parekh_events[idx]
+                li = ev['left_peak_idx']
+                ri = ev['right_peak_idx']
+
+                if ri <= li or ri >= len(spo2):
+                    continue
+
+                segment_spo2 = spo2[li:ri + 1]
+                segment_times = times[li:ri + 1]
+
+                if len(segment_spo2) < 2:
+                    continue
+
+                baseline_line = np.linspace(
+                    ev['left_peak_spo2'], ev['right_peak_spo2'],
+                    len(segment_spo2)
+                )
+                depth = np.maximum(baseline_line - segment_spo2, 0)
+                boot_area += trapz(depth, segment_times)
+
+            hb_boot = boot_area / 60 / total_hours
+            hb_values.append(hb_boot)
+
+        ci_low, ci_high = np.percentile(hb_values, [2.5, 97.5])
+        return (ci_low, ci_high)
+
+    def run_parekh_analysis(self, artifact_filter='Off', desat_threshold=3,
+                            use_global_hb=True, use_mit_st=False,
+                            baseline_method='stage_specific',
+                            floating_window_sec=600):
+        """
+        Run complete Parekh 2023 analysis pipeline.
+
+        Uses automated SpO₂ nadir detection (≥3% peak prominence) with
+        left/right peak baselines instead of manually-scored respiratory
+        events with pre-event time windows.
+
+        Parameters:
+        -----------
+        artifact_filter : str
+            SpO₂ artifact filter setting
+        desat_threshold : int
+            Desaturation threshold for ODI detection (3 or 4%)
+        use_global_hb : bool
+            Also calculate global HB
+        use_mit_st : bool
+            Use MIT annotations for staging if available
+
+        Returns:
+        --------
+        dict
+            Results in the same format as run_full_analysis()
+        """
+        # Step 1: Preprocess SpO₂ (reuse existing)
+        self.preprocess_spo2(artifact_filter)
+
+        # Step 2: Detect ODI events (for ODI metric display)
+        self.detect_odi_events(desat_threshold)
+
+        # Step 3: Sleep staging (for stage-specific metrics)
+        self.perform_sleep_staging(use_mit_st)
+
+        # Step 4: Parekh desaturation detection
+        parekh_events = self._parekh_detect_desaturations(
+            min_prominence=float(desat_threshold),
+            min_duration=4
+        )
+
+        # Step 5: Calculate HB from Parekh events
+        total_area, proof_events = self._parekh_calculate_hb(parekh_events)
+
+        # Step 6: Calculate total hours and HB
+        total_hours = self.raw.times[-1] / 3600
+        total_hb = (total_area / 60) / total_hours if total_hours > 0 else 0
+
+        # Step 7: Assign Parekh events to sleep stages for stage-specific metrics
+        # Convert Parekh events to events_df format for compatibility
+        event_records = []
+        for ev in parekh_events:
+            event_records.append({
+                'start': ev['left_peak_time'],
+                'end': ev['right_peak_time']
+            })
+        self.events_df = pd.DataFrame(event_records) if event_records else pd.DataFrame(columns=['start', 'end'])
+
+        # Assign stages to events
+        stage_events = {'W': [], 'N1': [], 'N2': [], 'N3': [], 'REM': [], 'Unknown': [], 'Total': []}
+
+        if len(self.events_df) > 0 and self.stages is not None:
+            event_stages = []
+            for _, ev in self.events_df.iterrows():
+                epoch_idx = int(ev['start'] // 30)
+                if epoch_idx < len(self.stages):
+                    s = self.stages[epoch_idx]
+                    if s not in ('W', 'N1', 'N2', 'N3', 'REM'):
+                        s = 'Unknown'
+                else:
+                    s = 'Unknown'
+                event_stages.append(s)
+            self.events_df['stage'] = event_stages
+
+            for stage in stage_events:
+                if stage == 'Total':
+                    stage_events['Total'] = self.events_df.to_dict('records')
+                else:
+                    evs = self.events_df[self.events_df['stage'] == stage]
+                    stage_events[stage] = evs.to_dict('records')
+
+        # Calculate stage-specific metrics
+        stage_results = {}
+        if self.stages is not None:
+            stage_counts = pd.Series(self.stages).value_counts()
+            stage_time = (stage_counts * 30 / 3600).to_dict()
+
+            # Group Parekh events by stage for HB calculation
+            parekh_by_stage = {}
+            for pev in parekh_events:
+                epoch_idx = int(pev['nadir_time'] // 30)
+                if self.stages is not None and epoch_idx < len(self.stages):
+                    s = self.stages[epoch_idx]
+                    if s not in ('W', 'N1', 'N2', 'N3', 'REM'):
+                        s = 'Unknown'
+                else:
+                    s = 'Unknown'
+                parekh_by_stage.setdefault(s, []).append(pev)
+
+            total_hb_weighted = 0.0
+            total_time = 0.0
+
+            for stage in ['W', 'N1', 'N2', 'N3', 'REM']:
+                hrs = stage_time.get(stage, 0)
+                if hrs == 0:
+                    continue
+
+                # Parekh HB for this stage
+                stage_pevents = parekh_by_stage.get(stage, [])
+                stage_area, _ = self._parekh_calculate_hb(stage_pevents)
+                hb_stage = (stage_area / 60) / hrs if hrs > 0 else 0
+
+                # ODI for this stage
+                stage_epoch_indices = [i for i, s in enumerate(self.stages) if s == stage]
+                odi_count = 0
+                for ei in stage_epoch_indices:
+                    epoch_start = ei * 30
+                    epoch_end = (ei + 1) * 30
+                    odi_in_epoch = self.odi_events[
+                        (self.odi_events['time'] >= epoch_start) &
+                        (self.odi_events['time'] < epoch_end)
+                    ]
+                    odi_count += len(odi_in_epoch)
+                odi_stage = odi_count / hrs if hrs > 0 else 0
+
+                n_stage_events = len(stage_pevents)
+                ahi_stage = n_stage_events / hrs if hrs > 0 else 0
+
+                stage_results[stage] = {
+                    'hrs': hrs,
+                    'AHI': ahi_stage,
+                    'ODI': odi_stage,
+                    'HB': hb_stage
+                }
+
+                total_hb_weighted += hb_stage * hrs
+                total_time += hrs
+
+            # Recalculate total_hb as weighted average if stages available
+            if total_time > 0:
+                total_hb = total_hb_weighted / total_time
+
+        # Step 8: Bootstrap CI
+        if len(parekh_events) > 0:
+            ci_low, ci_high = self._parekh_bootstrap_ci(parekh_events, n_boot=1000)
+        else:
+            ci_low, ci_high = 0.0, 0.0
+
+        # Step 9: Calculate global HB
+        global_hb_results = None
+        if use_global_hb:
+            global_hb_results = self.calculate_global_hypoxic_burden(
+                baseline_method=baseline_method,
+                floating_window_sec=floating_window_sec
+            )
+
+        # Step 10: Compile metrics
+        ahi = len(parekh_events) / total_hours if total_hours > 0 else 0
+        odi = len(self.odi_events) / total_hours if total_hours > 0 else 0
+
+        # Compile results (same format as run_full_analysis)
+        results = {
+            'duration': total_hours,
+            'ahi': ahi,
+            'odi': odi,
+            'total_hb': total_hb,
+            'ci': (ci_low, ci_high),
+            'events': proof_events,
+            'stage_hb': stage_results,
+            'manual_ahi': self.manual_ahi,
+            'use_mit_st': use_mit_st and self.manual_stages is not None,
+            'method': 'parekh',
+            'parekh_events_count': len(parekh_events)
+        }
+
+        # Add global HB if calculated
+        if global_hb_results:
+            results['global_hb'] = global_hb_results['global_hb']
+            results['baseline_used'] = global_hb_results['baseline']
+            results['stage_baselines'] = global_hb_results.get('stage_baselines', {})
+            results['fallback_baseline'] = global_hb_results.get('fallback_baseline', 0)
+            results['baseline_method'] = global_hb_results.get('baseline_method', 'stage_specific')
+            if 'floating_baseline' in global_hb_results:
+                results['floating_baseline'] = global_hb_results['floating_baseline']
+                results['floating_window_sec'] = global_hb_results.get('floating_window_sec', 600)
+
         return results
